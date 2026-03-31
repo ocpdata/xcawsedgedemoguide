@@ -95,6 +95,7 @@ jobs:
           openssl pkcs12 \
             -in "$RUNNER_TEMP/xc-api-creds.p12" \
             -clcerts \
+            -legacy \
             -nokeys \
             -passin env:VES_P12_PASSWORD \
             -out "$RUNNER_TEMP/xc-api-cert.pem"
@@ -178,6 +179,7 @@ jobs:
           openssl pkcs12 \
             -in "$RUNNER_TEMP/xc-api-creds.p12" \
             -clcerts \
+            -legacy \
             -nokeys \
             -passin env:VES_P12_PASSWORD \
             -out "$RUNNER_TEMP/xc-api-cert.pem"
