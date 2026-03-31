@@ -241,7 +241,7 @@ jobs:
           if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
             candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
           fi
-          candidates+=("Admin" "admin" "Standard" "standard" "ves-io-admin")
+          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
 
           selected_role=""
           for role in "${candidates[@]}"; do

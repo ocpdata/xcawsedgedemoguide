@@ -16,7 +16,7 @@ variable "xc_namespace" {
 variable "service_credential_role" {
   description = "XC role assigned to the temporary service credential in required namespaces."
   type        = string
-  default     = "ves-io-admin"
+  default     = "ves-io-admin-role"
 }
 
 variable "credential_name" {
