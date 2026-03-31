@@ -1,6 +1,6 @@
 locals {
   raw_name        = lower(join("-", compact([var.project_prefix, var.site_name, "site-kubeconfig"])))
-  generated_name  = substr(replace(local.raw_name, "/[^a-z0-9-]/", "-"), 0, 63)
+  generated_name  = substr(replace(local.raw_name, "/[^a-z0-9-]/", "-"), 0, 31)
   effective_name  = var.credential_name != "" ? var.credential_name : local.generated_name
 }
 

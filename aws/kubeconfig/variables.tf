@@ -12,6 +12,11 @@ variable "credential_name" {
   description = "Optional explicit name for the temporary service credential."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.credential_name == "" || length(var.credential_name) <= 31
+    error_message = "credential_name must be 31 characters or fewer."
+  }
 }
 
 variable "xc_api_url" {

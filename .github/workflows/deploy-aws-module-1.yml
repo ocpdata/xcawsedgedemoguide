@@ -226,10 +226,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          credential_name="$(printf '%s' "${PROJECT_PREFIX}-${GITHUB_RUN_ID}-site-kubeconfig" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          prefix_part="$(printf '%s' "$PROJECT_PREFIX" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | cut -c1-12)"
+          prefix_part="${prefix_part#-}"
+          prefix_part="${prefix_part%-}"
+          if [[ -z "$prefix_part" ]]; then
+            prefix_part="xcaws"
+          fi
+          run_suffix="${GITHUB_RUN_ID:(-8)}"
+          credential_name="${prefix_part}-${run_suffix}-skcfg"
           credential_name="${credential_name#-}"
           credential_name="${credential_name%-}"
-          credential_name="${credential_name:0:63}"
           terraform -chdir=aws/kubeconfig apply -auto-approve \
             -var="project_prefix=${PROJECT_PREFIX}" \
             -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
