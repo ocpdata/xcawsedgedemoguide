@@ -247,13 +247,15 @@ jobs:
               "$site_endpoint" || true)"
 
             if [[ "$http_code" == "200" ]]; then
-              site_state="$(jq -r '.spec.site_state // .replace_form.spec.site_state // .site_state // .status[]?.site_state // empty' "$response_file")"
-              status_summary="$(jq -r '[.status[]? | .message // .reason // .status // .site_state // tostring] | join(" | ")' "$response_file")"
+              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty)] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
               if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
                 status_summary="no detailed status"
               fi
 
               echo "XC site state: ${site_state:-unknown}"
+              echo "XC site operational status: ${operational_status:-unknown}"
               echo "XC site details: ${status_summary}"
 
               case "$site_state" in
@@ -266,6 +268,12 @@ jobs:
                   exit 1
                   ;;
               esac
+
+              case "$operational_status" in
+                Installed|Ready|Applied)
+                  exit 0
+                  ;;
+              esac
             else
               echo "Unable to read XC site status yet (attempt ${attempt}/${attempts}, HTTP ${http_code:-curl-error})."
               if [[ -s "$response_file" ]]; then
@@ -273,8 +281,10 @@ jobs:
               fi
             fi
 
-            echo "XC site not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-            sleep "$sleep_seconds"
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "XC site not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
           done
 
           echo "::error::Timed out waiting for the XC App Stack site to become ready."
