@@ -105,6 +105,32 @@ jobs:
             exit 1
           fi
 
+      - name: Detect XC namespace state
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace_url="${TF_VAR_xc_api_url%/}/public/namespaces/${XC_NAMESPACE}"
+          status_code="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --cert-type P12 \
+            --cert "$RUNNER_TEMP/xc-api-creds.p12:$VES_P12_PASSWORD" \
+            "$namespace_url")"
+          case "$status_code" in
+            200)
+              echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              ;;
+            404)
+              echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::Unexpected XC API response while checking namespace ${XC_NAMESPACE}: HTTP ${status_code}."
+              exit 1
+              ;;
+          esac
+
       - name: Terraform init prerequisites
         shell: bash
         run: |

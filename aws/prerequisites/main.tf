@@ -6,9 +6,18 @@ locals {
   vpc_name           = "${local.base_name}-vpc"
   subnet_a_cidr      = cidrsubnet(var.vpc_cidr, 8, 10)
   app_stack_location = "${local.base_name}-app-stack"
+  effective_namespace = var.create_xc_namespace ? volterra_namespace.app_namespace[0].name : data.volterra_namespace.app_namespace[0].name
+}
+
+resource "volterra_namespace" "app_namespace" {
+  count = var.create_xc_namespace ? 1 : 0
+
+  name = var.xc_namespace
 }
 
 data "volterra_namespace" "app_namespace" {
+  count = var.create_xc_namespace ? 0 : 1
+
   name = var.xc_namespace
 }
 
@@ -255,7 +264,7 @@ output "mk8s_cluster_name" {
 
 output "xc_namespace" {
   description = "XC namespace used by module 1."
-  value       = data.volterra_namespace.app_namespace.name
+  value       = local.effective_namespace
 }
 
 output "appstack_private_ip" {

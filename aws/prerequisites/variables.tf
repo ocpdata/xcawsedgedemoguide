@@ -8,6 +8,12 @@ variable "xc_namespace" {
   type        = string
 }
 
+variable "create_xc_namespace" {
+  description = "Whether prerequisites should create the XC namespace when it does not already exist."
+  type        = bool
+  default     = true
+}
+
 variable "xc_api_url" {
   description = "F5 Distributed Cloud API URL."
   type        = string
