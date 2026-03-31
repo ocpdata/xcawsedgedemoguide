@@ -99,6 +99,14 @@ jobs:
             -nokeys \
             -passin env:VES_P12_PASSWORD \
             -out "$RUNNER_TEMP/xc-api-cert.pem"
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -legacy \
+            -nocerts \
+            -nodes \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-key.pem"
+          chmod 600 "$RUNNER_TEMP/xc-api-key.pem"
           end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
           if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
             echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
@@ -115,8 +123,8 @@ jobs:
             --show-error \
             --output /dev/null \
             --write-out '%{http_code}' \
-            --cert-type P12 \
-            --cert "$RUNNER_TEMP/xc-api-creds.p12:$VES_P12_PASSWORD" \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
             "$namespace_url")"
           case "$status_code" in
             200)
@@ -209,6 +217,14 @@ jobs:
             -nokeys \
             -passin env:VES_P12_PASSWORD \
             -out "$RUNNER_TEMP/xc-api-cert.pem"
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -legacy \
+            -nocerts \
+            -nodes \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-key.pem"
+          chmod 600 "$RUNNER_TEMP/xc-api-key.pem"
           end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
           if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
             echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
