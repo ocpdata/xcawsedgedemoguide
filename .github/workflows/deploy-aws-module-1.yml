@@ -2,6 +2,23 @@ name: Deploy AWS Prerequisites And Module 1
 
 on:
   workflow_dispatch:
+    inputs:
+      aws_region:
+        description: AWS region for the App Stack site
+        required: false
+        type: string
+      project_prefix:
+        description: Prefix used to build AWS and XC resource names
+        required: false
+        type: string
+      vpc_cidr:
+        description: CIDR block for the App Stack VPC
+        required: false
+        type: string
+      xc_namespace:
+        description: XC namespace for prerequisites and module 1
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -9,10 +26,10 @@ permissions:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
-  VPC_CIDR: ${{ vars.VPC_CIDR }}
-  XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
+  AWS_REGION: ${{ inputs.aws_region || vars.AWS_REGION }}
+  PROJECT_PREFIX: ${{ inputs.project_prefix || vars.PROJECT_PREFIX }}
+  VPC_CIDR: ${{ inputs.vpc_cidr || vars.VPC_CIDR }}
+  XC_NAMESPACE: ${{ inputs.xc_namespace || vars.XC_NAMESPACE }}
 
 jobs:
   prerequisites:
@@ -26,10 +43,10 @@ jobs:
       workspace_prefix: ${{ steps.naming.outputs.workspace_prefix }}
     env:
       VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
-      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
-      TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
-      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR }}
+      TF_VAR_project_prefix: ${{ inputs.project_prefix || vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ inputs.xc_namespace || vars.XC_NAMESPACE }}
+      TF_VAR_aws_region: ${{ inputs.aws_region || vars.AWS_REGION }}
+      TF_VAR_vpc_cidr: ${{ inputs.vpc_cidr || vars.VPC_CIDR }}
       TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
       TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
       TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
@@ -41,6 +58,29 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR XC_NAMESPACE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required workflow value: ${name}. Define it as a repository variable or provide it when launching workflow_dispatch."
+              exit 1
+            fi
+          done
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import sys
+
+          cidr = os.environ["VPC_CIDR"]
+          try:
+              ipaddress.ip_network(cidr, strict=False)
+          except Exception as exc:
+              print(f"::error::VPC_CIDR must be a valid CIDR block. Received {cidr!r}: {exc}")
+              sys.exit(1)
+          PY
 
       - name: Compute workspace names
         id: naming
