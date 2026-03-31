@@ -8,6 +8,17 @@ variable "site_name" {
   type        = string
 }
 
+variable "xc_namespace" {
+  description = "XC namespace that the temporary service credential should be allowed to manage."
+  type        = string
+}
+
+variable "service_credential_role" {
+  description = "XC role assigned to the temporary service credential in required namespaces."
+  type        = string
+  default     = "ves-io-admin"
+}
+
 variable "credential_name" {
   description = "Optional explicit name for the temporary service credential."
   type        = string
