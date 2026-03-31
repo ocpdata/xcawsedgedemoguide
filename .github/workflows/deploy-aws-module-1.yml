@@ -69,9 +69,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${PREREQUISITES_WORKSPACE}"
+          }
+          EOF
           terraform -chdir=aws/prerequisites init \
-            -backend-config="organization=${{ secrets.TF_CLOUD_ORGANIZATION }}" \
-            -backend-config="workspaces.name=${PREREQUISITES_WORKSPACE}"
+            -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
 
       - name: Terraform apply prerequisites
         shell: bash
@@ -162,9 +167,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/module-1.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${MODULE1_WORKSPACE}"
+          }
+          EOF
           terraform -chdir=aws/module-1 init \
-            -backend-config="organization=${{ secrets.TF_CLOUD_ORGANIZATION }}" \
-            -backend-config="workspaces.name=${MODULE1_WORKSPACE}"
+            -backend-config="$RUNNER_TEMP/module-1.backend.hcl"
 
       - name: Terraform apply module 1
         shell: bash
