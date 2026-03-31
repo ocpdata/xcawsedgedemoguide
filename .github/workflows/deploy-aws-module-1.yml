@@ -282,11 +282,27 @@ jobs:
           echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
           echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
 
-      - name: Validate generated kubeconfig
+      - name: Wait for mK8s API readiness
         shell: bash
         run: |
           set -euo pipefail
-          kubectl --kubeconfig "${{ steps.kubeconfig.outputs.kubeconfig_path }}" get nodes
+          kubeconfig_path="${{ steps.kubeconfig.outputs.kubeconfig_path }}"
+          attempts=40
+          sleep_seconds=15
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes >/dev/null 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes
+              exit 0
+            fi
+
+            echo "mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+          done
+
+          echo "::error::Timed out waiting for the mK8s API server to become ready."
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/readyz || true
+          exit 1
 
       - name: Terraform init module 1
         shell: bash
