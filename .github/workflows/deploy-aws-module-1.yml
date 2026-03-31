@@ -287,11 +287,12 @@ jobs:
         run: |
           set -euo pipefail
           kubeconfig_path="${{ steps.kubeconfig.outputs.kubeconfig_path }}"
-          attempts=40
+          attempts=80
           sleep_seconds=15
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes >/dev/null 2>&1; then
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/version >/dev/null 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes >/dev/null 2>&1; then
               kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes
               exit 0
             fi
@@ -301,7 +302,8 @@ jobs:
           done
 
           echo "::error::Timed out waiting for the mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/readyz || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/version || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
           exit 1
 
       - name: Terraform init module 1
