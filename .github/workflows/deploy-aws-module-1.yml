@@ -1,0 +1,191 @@
+name: Deploy AWS Prerequisites And Module 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
+  VPC_CIDR: ${{ vars.VPC_CIDR }}
+  XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
+
+jobs:
+  prerequisites:
+    name: Apply prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      app_stack_name: ${{ steps.collect.outputs.app_stack_name }}
+      mk8s_cluster_name: ${{ steps.collect.outputs.mk8s_cluster_name }}
+      xc_namespace: ${{ steps.collect.outputs.xc_namespace }}
+      workspace_prefix: ${{ steps.naming.outputs.workspace_prefix }}
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR }}
+      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Compute workspace names
+        id: naming
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+          echo "workspace_prefix=$workspace_prefix" >> "$GITHUB_OUTPUT"
+          echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
+          echo "MODULE1_WORKSPACE=${workspace_prefix}-module-1" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Terraform init prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws/prerequisites init \
+            -backend-config="organization=${{ secrets.TF_CLOUD_ORGANIZATION }}" \
+            -backend-config="workspaces.name=${PREREQUISITES_WORKSPACE}"
+
+      - name: Terraform apply prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws/prerequisites apply -auto-approve
+
+      - name: Collect prerequisite outputs
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "app_stack_name=$(terraform -chdir=aws/prerequisites output -raw app_stack_name)" >> "$GITHUB_OUTPUT"
+          echo "mk8s_cluster_name=$(terraform -chdir=aws/prerequisites output -raw mk8s_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "xc_namespace=$(terraform -chdir=aws/prerequisites output -raw xc_namespace)" >> "$GITHUB_OUTPUT"
+
+  module_1:
+    name: Apply module 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: prerequisites
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ needs.prerequisites.outputs.xc_namespace }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+      TF_VAR_app_stack_name: ${{ needs.prerequisites.outputs.app_stack_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Restore workspace names
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace_prefix='${{ needs.prerequisites.outputs.workspace_prefix }}'
+          echo "MODULE1_WORKSPACE=${workspace_prefix}-module-1" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Terraform init kubeconfig helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws/kubeconfig init
+
+      - name: Generate site kubeconfig
+        id: kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          credential_name="$(printf '%s' "${PROJECT_PREFIX}-${GITHUB_RUN_ID}-site-kubeconfig" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          credential_name="${credential_name#-}"
+          credential_name="${credential_name%-}"
+          credential_name="${credential_name:0:63}"
+          terraform -chdir=aws/kubeconfig apply -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
+            -var="credential_name=${credential_name}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
+          terraform -chdir=aws/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/mk8s-kubeconfig.yaml"
+          echo "credential_name=${credential_name}" >> "$GITHUB_OUTPUT"
+          echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
+
+      - name: Validate generated kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl --kubeconfig "${{ steps.kubeconfig.outputs.kubeconfig_path }}" get nodes
+
+      - name: Terraform init module 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws/module-1 init \
+            -backend-config="organization=${{ secrets.TF_CLOUD_ORGANIZATION }}" \
+            -backend-config="workspaces.name=${MODULE1_WORKSPACE}"
+
+      - name: Terraform apply module 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws/module-1 apply -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+            -var="kubeconfig_path=${{ steps.kubeconfig.outputs.kubeconfig_path }}" \
+            -var="app_stack_name=${{ needs.prerequisites.outputs.app_stack_name }}"
+
+      - name: Revoke temporary kubeconfig credential
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          terraform -chdir=aws/kubeconfig destroy -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
+            -var="credential_name=${{ steps.kubeconfig.outputs.credential_name }}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
