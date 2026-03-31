@@ -13,6 +13,7 @@ env:
   PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
   VPC_CIDR: ${{ vars.VPC_CIDR }}
   XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
+  XC_SERVICE_CREDENTIAL_ROLE: ${{ vars.XC_SERVICE_CREDENTIAL_ROLE }}
 
 jobs:
   prerequisites:
@@ -236,16 +237,50 @@ jobs:
           credential_name="${prefix_part}-${run_suffix}-skcfg"
           credential_name="${credential_name#-}"
           credential_name="${credential_name%-}"
-          terraform -chdir=aws/kubeconfig apply -auto-approve \
-            -var="project_prefix=${PROJECT_PREFIX}" \
-            -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
-            -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
-            -var="credential_name=${credential_name}" \
-            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
+          candidates=()
+          if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
+            candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
+          fi
+          candidates+=("Admin" "admin" "Standard" "standard" "ves-io-admin")
+
+          selected_role=""
+          for role in "${candidates[@]}"; do
+            [[ -z "$role" ]] && continue
+            if [[ " ${tried_roles:-} " == *" $role "* ]]; then
+              continue
+            fi
+            tried_roles="${tried_roles:-} $role"
+
+            apply_log="$RUNNER_TEMP/kubeconfig-apply-${role}.log"
+            if terraform -chdir=aws/kubeconfig apply -auto-approve \
+              -var="project_prefix=${PROJECT_PREFIX}" \
+              -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
+              -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
+              -var="service_credential_role=${role}" \
+              -var="credential_name=${credential_name}" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              >"$apply_log" 2>&1
+            then
+              selected_role="$role"
+              break
+            fi
+
+            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              cat "$apply_log"
+              exit 1
+            fi
+          done
+
+          if [[ -z "$selected_role" ]]; then
+            echo "::error::Unable to create the XC site kubeconfig credential with any known role. Set repository variable XC_SERVICE_CREDENTIAL_ROLE to a valid role for this tenant."
+            exit 1
+          fi
+
           terraform -chdir=aws/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/mk8s-kubeconfig.yaml"
           echo "credential_name=${credential_name}" >> "$GITHUB_OUTPUT"
           echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
+          echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
 
       - name: Validate generated kubeconfig
         shell: bash
@@ -287,6 +322,7 @@ jobs:
             -var="project_prefix=${PROJECT_PREFIX}" \
             -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
             -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
+            -var="service_credential_role=${{ steps.kubeconfig.outputs.service_credential_role }}" \
             -var="credential_name=${{ steps.kubeconfig.outputs.credential_name }}" \
             -var="xc_api_url=${{ secrets.XC_API_URL }}" \
             -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
