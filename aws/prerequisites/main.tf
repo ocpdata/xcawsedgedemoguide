@@ -8,7 +8,7 @@ locals {
   app_stack_location = "${local.base_name}-app-stack"
 }
 
-resource "volterra_namespace" "app_namespace" {
+data "volterra_namespace" "app_namespace" {
   name = var.xc_namespace
 }
 
@@ -255,7 +255,7 @@ output "mk8s_cluster_name" {
 
 output "xc_namespace" {
   description = "XC namespace used by module 1."
-  value       = volterra_namespace.app_namespace.name
+  value       = data.volterra_namespace.app_namespace.name
 }
 
 output "appstack_private_ip" {
