@@ -117,21 +117,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          namespace_url="${TF_VAR_xc_api_url%/}/public/namespaces/${XC_NAMESPACE}"
+          namespace_url="${TF_VAR_xc_api_url%/}/public/namespaces"
+          response_file="$RUNNER_TEMP/xc-namespaces.json"
           status_code="$(curl \
             --silent \
             --show-error \
-            --output /dev/null \
+            --output "$response_file" \
             --write-out '%{http_code}' \
             --cert "$RUNNER_TEMP/xc-api-cert.pem" \
             --key "$RUNNER_TEMP/xc-api-key.pem" \
             "$namespace_url")"
           case "$status_code" in
             200)
-              echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              if python3 -c 'import json, sys; payload=json.load(open(sys.argv[1], encoding="utf-8")); namespace=sys.argv[2]; items=payload.get("items", []); sys.exit(0 if any(item.get("metadata", {}).get("name") == namespace or item.get("name") == namespace for item in items) else 1)' "$response_file" "$XC_NAMESPACE"
+              then
+                echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              else
+                echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              fi
               ;;
             404)
-              echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              echo "::error::Unexpected XC API response while listing namespaces: HTTP ${status_code}."
+              exit 1
               ;;
             *)
               echo "::error::Unexpected XC API response while checking namespace ${XC_NAMESPACE}: HTTP ${status_code}."
