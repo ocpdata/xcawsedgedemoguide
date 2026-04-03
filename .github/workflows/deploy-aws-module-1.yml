@@ -110,14 +110,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws/namespace-probe init
+          terraform -chdir=aws-mk8s-vk8s/namespace-probe init
 
       - name: Detect XC namespace state
         shell: bash
         run: |
           set -euo pipefail
           probe_log="$RUNNER_TEMP/namespace-probe.log"
-          if terraform -chdir=aws/namespace-probe plan \
+          if terraform -chdir=aws-mk8s-vk8s/namespace-probe plan \
             -input=false \
             -no-color \
             >"$probe_log" 2>&1
@@ -142,23 +142,23 @@ jobs:
             name = "${PREREQUISITES_WORKSPACE}"
           }
           EOF
-          terraform -chdir=aws/prerequisites init \
+          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
             -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
 
       - name: Terraform apply prerequisites
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws/prerequisites apply -auto-approve
+          terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve
 
       - name: Collect prerequisite outputs
         id: collect
         shell: bash
         run: |
           set -euo pipefail
-          echo "app_stack_name=$(terraform -chdir=aws/prerequisites output -raw app_stack_name)" >> "$GITHUB_OUTPUT"
-          echo "mk8s_cluster_name=$(terraform -chdir=aws/prerequisites output -raw mk8s_cluster_name)" >> "$GITHUB_OUTPUT"
-          echo "xc_namespace=$(terraform -chdir=aws/prerequisites output -raw xc_namespace)" >> "$GITHUB_OUTPUT"
+          echo "app_stack_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw app_stack_name)" >> "$GITHUB_OUTPUT"
+          echo "mk8s_cluster_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw mk8s_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "xc_namespace=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw xc_namespace)" >> "$GITHUB_OUTPUT"
 
   module_1:
     name: Apply module 1
@@ -291,7 +291,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws/kubeconfig init
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig init
 
       - name: Generate site kubeconfig
         id: kubeconfig
@@ -323,7 +323,7 @@ jobs:
             tried_roles="${tried_roles:-} $role"
 
             apply_log="$RUNNER_TEMP/kubeconfig-apply-${role}.log"
-            if terraform -chdir=aws/kubeconfig apply -auto-approve \
+            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
               -var="project_prefix=${PROJECT_PREFIX}" \
               -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
               -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
@@ -348,7 +348,7 @@ jobs:
             exit 1
           fi
 
-          terraform -chdir=aws/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/mk8s-kubeconfig.yaml"
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/mk8s-kubeconfig.yaml"
           echo "credential_name=${credential_name}" >> "$GITHUB_OUTPUT"
           echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
           echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
@@ -387,14 +387,14 @@ jobs:
             name = "${MODULE1_WORKSPACE}"
           }
           EOF
-          terraform -chdir=aws/module-1 init \
+          terraform -chdir=aws-mk8s-vk8s/module-1 init \
             -backend-config="$RUNNER_TEMP/module-1.backend.hcl"
 
       - name: Terraform apply module 1
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws/module-1 apply -auto-approve \
+          terraform -chdir=aws-mk8s-vk8s/module-1 apply -auto-approve \
             -var="project_prefix=${PROJECT_PREFIX}" \
             -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
             -var="xc_api_url=${{ secrets.XC_API_URL }}" \
@@ -407,7 +407,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          terraform -chdir=aws/kubeconfig destroy -auto-approve \
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig destroy -auto-approve \
             -var="project_prefix=${PROJECT_PREFIX}" \
             -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
             -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
