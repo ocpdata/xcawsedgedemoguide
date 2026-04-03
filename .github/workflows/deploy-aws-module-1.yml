@@ -361,21 +361,29 @@ jobs:
           kubeconfig_path="${{ steps.kubeconfig.outputs.kubeconfig_path }}"
           attempts=80
           sleep_seconds=15
+          cluster_info_log="$RUNNER_TEMP/mk8s-cluster-info.log"
+          api_discovery_log="$RUNNER_TEMP/mk8s-api-discovery.log"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/version >/dev/null 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes >/dev/null 2>&1; then
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/api >"$api_discovery_log" 2>&1; then
+              cat "$cluster_info_log"
               exit 0
             fi
 
             echo "mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            if [[ -s "$cluster_info_log" ]]; then
+              tail -n 5 "$cluster_info_log"
+            fi
+            if [[ -s "$api_discovery_log" ]]; then
+              tail -n 5 "$api_discovery_log"
+            fi
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/version || true
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/api || true
           exit 1
 
       - name: Terraform init module 1
