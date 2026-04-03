@@ -11,7 +11,7 @@ env:
   TF_INPUT: "false"
   AWS_REGION: ${{ vars.AWS_REGION }}
   PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
-  VPC_CIDR: ${{ vars.VPC_CIDR }}
+  VPC_CIDR_MK8S: ${{ vars.VPC_CIDR_MK8S }}
   XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
   XC_SERVICE_CREDENTIAL_ROLE: ${{ vars.XC_SERVICE_CREDENTIAL_ROLE }}
 
@@ -30,7 +30,7 @@ jobs:
       TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
       TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR }}
+      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_MK8S }}
       TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
       TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
       TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR XC_NAMESPACE; do
+          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR_MK8S XC_NAMESPACE; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::Missing required repository variable: ${name}."
               exit 1
@@ -58,11 +58,11 @@ jobs:
           import os
           import sys
 
-          cidr = os.environ["VPC_CIDR"]
+          cidr = os.environ["VPC_CIDR_MK8S"]
           try:
               ipaddress.ip_network(cidr, strict=False)
           except Exception as exc:
-              print(f"::error::VPC_CIDR must be a valid CIDR block. Received {cidr!r}: {exc}")
+              print(f"::error::VPC_CIDR_MK8S must be a valid CIDR block. Received {cidr!r}: {exc}")
               sys.exit(1)
           PY
 

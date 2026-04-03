@@ -32,8 +32,9 @@ resource "aws_vpc" "vpc" {
 }
 
 resource "aws_subnet" "subnet_a" {
-  vpc_id     = aws_vpc.vpc.id
-  cidr_block = local.subnet_a_cidr
+  vpc_id            = aws_vpc.vpc.id
+  cidr_block        = local.subnet_a_cidr
+  availability_zone = "${var.aws_region}a"
 
   tags = {
     Name        = "${local.vpc_name}-subnet-a"
