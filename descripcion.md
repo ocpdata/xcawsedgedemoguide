@@ -224,7 +224,7 @@ Características importantes:
 ```mermaid
 flowchart TB
     subgraph VPC[AWS VPC CIDR VPC_CIDR_MK8S]
-        subgraph Subnet[Subnet cidrsubnet(VPC, 8, 10)]
+        subgraph Subnet[Subnet principal del branch]
             AppNode[App Stack site node]
             VM[Windows kiosk VM]
         end
