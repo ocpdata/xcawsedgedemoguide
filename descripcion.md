@@ -56,223 +56,315 @@ flowchart TD
 
 ## Topologia de la arquitectura desplegada
 
-El workflow no solo ejecuta Terraform en dos etapas; en conjunto construye una arquitectura distribuida entre AWS y F5 Distributed Cloud.
+La referencia original de `f5devcentral/xcawsedgedemoguide` presenta una arquitectura completa de BuyTime distribuida entre Retail Branch, Customer Edge y Regional Edge. Este workflow implementa solo una porcion de ese escenario: la parte de **Retail Branch sobre App Stack en AWS**, junto con la integracion hacia un servicio externo de recomendaciones.
 
-En terminos practicos, la topologia final queda compuesta por estas capas:
+Dicho de otra forma:
 
-- una VPC en AWS para el laboratorio
-- una subnet donde viven el App Stack site y la VM kiosk
-- un sitio XC tipo `aws_vpc_site` asociado a esa VPC
-- un cluster mK8s administrado por XC, creado o reutilizado
-- una VM Windows kiosk con IP publica para acceso RDP
-- un namespace de aplicacion en mK8s
-- tres workloads Kubernetes: `mysql`, `wordpress` y `kiosk`
-- dos HTTP load balancers internos de XC
-- dos dominios internos: `kiosk.<namespace>.buytime.internal` y `recommendations.<namespace>.buytime.internal`
+- la guia original muestra un escenario multisitio y multicloud mas amplio
+- este workflow automatiza el tramo **Pre-Requisites + Module 1**
+- no despliega CE, vK8s, sincronizacion de inventario ni Regional Edge
+- si deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM y los HTTP load balancers internos de `kiosk` y `recommendations`
 
-### Vista topologica general
+### Alcance arquitectonico implementado por este workflow
 
 ```mermaid
 flowchart LR
-    U[Usuario u operador] --> GHA[GitHub Actions deploy workflow]
-    GHA --> TFC[Terraform Cloud workspaces]
-    GHA --> XC[F5 Distributed Cloud]
-    GHA --> AWS[AWS]
+    subgraph FULL[Escenario de referencia BuyTime]
+        RB[Retail Branch]
+        CE[Customer Edge]
+        RE[Regional Edge]
+    end
 
-    subgraph AWSVPC[AWS VPC del laboratorio]
-        subgraph SUBNET[Subnet principal]
-            APP[XC App Stack site node]
-            VM[Windows kiosk VM]
+    RB:::implemented
+    CE:::notimplemented
+    RE:::notimplemented
+
+    classDef implemented fill:#d9f2d9,stroke:#2d6a4f,stroke-width:2px,color:#111;
+    classDef notimplemented fill:#f3f4f6,stroke:#9ca3af,stroke-width:1px,color:#444;
+```
+
+### Resumen de componentes realmente desplegados
+
+El resultado final del workflow es esta arquitectura funcional:
+
+- una VPC en AWS para el branch
+- una subnet principal donde viven el App Stack site y la VM kiosk
+- un `aws_vpc_site` de F5 XC sobre esa VPC
+- un mK8s administrado por XC, creado o reutilizado
+- una VM Windows kiosk con acceso RDP por IP publica
+- un namespace de aplicacion en mK8s
+- tres workloads Kubernetes para la experiencia de retail kiosk
+- un HTTP load balancer interno para el frontend kiosk
+- un HTTP load balancer interno para el servicio de recomendaciones
+- un origin pool Kubernetes para el kiosco
+- un origin pool por DNS publico para recomendaciones externas
+
+## Vista de escenario tipo guia, ajustada al workflow real
+
+Esta vista intenta parecerse mas a la narrativa del repo de referencia, pero mostrando solo lo que este workflow materializa.
+
+```mermaid
+flowchart LR
+    Shopper[Operador o usuario en sucursal] --> KioskVM[Windows kiosk VM]
+
+    subgraph AWS[AWS Retail Branch VPC]
+        subgraph BranchSubnet[Subnet del branch]
+            AppStackNode[App Stack site node]
+            KioskVM
         end
     end
 
-    subgraph XCCONTROL[F5 XC control plane]
-        NS[XC namespace de aplicacion]
-        MK8S[mK8s administrado por XC]
-        LB1[HTTP Load Balancer kiosk]
-        LB2[HTTP Load Balancer recommendations]
-        OP1[Origin pool kiosk-service]
-        OP2[Origin pool externo recommendations]
+    subgraph XC[F5 Distributed Cloud]
+        SystemNS[system namespace]
+        AppNS[Application namespace XC_NAMESPACE]
+        MK8S[mK8s buytime.internal]
+        KioskLB[HTTP LB kiosk.namespace.buytime.internal]
+        RecLB[HTTP LB recommendations.namespace.buytime.internal]
+        KioskPool[Origin pool -> kiosk-service.namespace]
+        RecPool[Origin pool -> recommendations origin DNS]
     end
 
-    APP --> MK8S
-    NS --> LB1
-    NS --> LB2
-    LB1 --> OP1
-    LB2 --> OP2
-    OP1 --> MK8S
-    VM --> LB1
-    VM --> LB2
+    subgraph MKSCOPE[mK8s workloads en el branch]
+        MySQL[(MySQL pod)]
+        WordPress[WordPress pod]
+        KioskProxy[Kiosk reverse proxy pod]
+    end
+
+    ExternalRec[Servicio externo de recomendaciones]
+
+    SystemNS --> MK8S
+    AppStackNode --> MK8S
+    AppNS --> KioskLB
+    AppNS --> RecLB
+    KioskLB --> KioskPool
+    RecLB --> RecPool
+    KioskPool --> KioskProxy
+    KioskProxy --> WordPress
+    WordPress --> MySQL
+    RecPool --> ExternalRec
+    KioskVM --> KioskLB
+    KioskVM --> RecLB
 ```
 
-### Capas de la arquitectura
+## Planos de la arquitectura
 
-#### 1. Capa de automatizacion
+Para que la topologia sea mas clara, conviene separarla en cuatro planos: automatizacion, control, infraestructura y datos o trafico.
 
-La ejecucion empieza en GitHub Actions y usa Terraform Cloud como backend remoto.
+### 1. Plano de automatizacion
 
-- GitHub Actions orquesta el orden de despliegue
-- Terraform Cloud conserva el estado remoto en workspaces separados
-- F5 XC provee el control plane del sitio, del mK8s y de los load balancers
-- AWS hospeda la red, la VM kiosk y la infraestructura del App Stack site
+Este plano describe quien despliega y donde se guarda el estado.
 
-#### 2. Capa de red en AWS
-
-El modulo `prerequisites` crea la base de red:
-
-- una `aws_vpc`
-- una `aws_subnet` principal en una sola zona de disponibilidad
-- una `aws_security_group` para la VM kiosk
-- una `aws_instance` Windows para pruebas del laboratorio
-
-La VM kiosk tiene:
-
-- IP publica para acceso por RDP
-- acceso de salida completo
-- resolución local reforzada mediante entradas en `hosts`
-
-El App Stack site queda desplegado dentro de la misma subnet, por lo que la VM y el sitio comparten la red privada del laboratorio.
-
-#### 3. Capa de sitio en F5 XC
-
-Sobre esa VPC, el workflow crea un recurso `volterra_aws_vpc_site` que representa el App Stack site.
-
-Características relevantes del sitio:
-
-- usa credenciales AWS registradas en XC
-- se ancla a la VPC y subnet creadas por Terraform
-- despliega hardware `aws-byol-voltstack-combo`
-- opera sin `internet VIP`
-- enlaza el sitio con un mK8s administrado por XC
-
-Eso significa que XC controla el plano del sitio, mientras AWS aloja la infraestructura subyacente.
-
-#### 4. Capa de Kubernetes administrado
-
-El sitio queda asociado a un mK8s con dominio local `buytime.internal`.
-
-Ese mK8s puede:
-
-- crearse desde cero con `volterra_k8s_cluster`
-- reutilizar un cluster existente mediante `EXISTING_MK8S_CLUSTER_NAME`
-
-El workflow espera explicitamente a que el sitio y luego el API del mK8s esten realmente listos antes de aplicar cargas de trabajo.
-
-#### 5. Capa de aplicacion en Kubernetes
-
-El modulo `module_1` aplica manifiestos Kubernetes en el namespace definido por `XC_NAMESPACE`.
-
-Los objetos mas importantes son:
-
-- `Namespace`
-- `Deployment/mysql-deployment`
-- `Service/mysql-service`
-- `Deployment/wordpress-deployment`
-- `Service/wordpress-service`
-- `Deployment/kiosk-deployment`
-- `Service/kiosk-service`
-
-### Topologia interna del namespace en mK8s
+- GitHub Actions coordina el orden de ejecucion
+- Terraform Cloud guarda el estado remoto en workspaces separados
+- el workflow se comunica con AWS y F5 XC usando credenciales del repositorio
+- el job `prerequisites` publica outputs consumidos por `module_1`
 
 ```mermaid
 flowchart LR
-    subgraph MK8SNS[Namespace de aplicacion en mK8s]
-        MYSQLD[mysql-deployment]
-        MYSQLS[mysql-service:3306]
-        WPD[wordpress-deployment]
-        WPS[wordpress-service:8080]
-        KIOSKD[kiosk-deployment]
-        KIOSKS[kiosk-service:8080]
-    end
-
-    MYSQLD --> MYSQLS
-    WPD --> WPS
-    KIOSKD --> KIOSKS
-    WPD -->|WORDPRESS_DB_HOST=mysql-service| MYSQLS
-    KIOSKD -->|WORDPRESS_HOST=kiosk.domain| WPS
+    User[Operador] --> GHA[GitHub Actions workflow_dispatch]
+    GHA --> P[Job prerequisites]
+    P --> TFC1[Terraform Cloud prerequisites workspace]
+    P --> AWS[AWS API]
+    P --> XC[F5 XC API]
+    P --> OUT[Outputs del job]
+    OUT --> M1[Job module_1]
+    M1 --> TFC2[Terraform Cloud module-1 workspace]
+    M1 --> XC
+    M1 --> AWS
 ```
 
-### Rol de cada workload
+### 2. Plano de control
 
-- `mysql` almacena la base de datos de WordPress
-- `wordpress` sirve la aplicacion principal de BuyTime
-- `kiosk` actua como reverse proxy frontal para la experiencia de kiosco
+Este plano muestra como F5 XC controla la infraestructura del branch.
 
-La relacion funcional es esta:
+- el namespace `system` de XC contiene el `aws_vpc_site` y el mK8s
+- el namespace de aplicacion contiene los objetos de exposicion de `module_1`
+- el sitio App Stack se enlaza al mK8s asociado
+- el workflow genera una credencial temporal para obtener kubeconfig del sitio
 
-1. `kiosk` recibe el trafico HTTP para `kiosk.<namespace>.buytime.internal`
-2. `kiosk` reenvia la navegacion hacia WordPress
-3. `wordpress` consulta a MySQL mediante `mysql-service`
+```mermaid
+flowchart TD
+    XCAPI[F5 XC control plane API]
+    XCAPI --> SYS[system namespace]
+    XCAPI --> APPNS[application namespace XC_NAMESPACE]
 
-#### 6. Capa de exposicion con F5 XC
+    SYS --> Site[volterra_aws_vpc_site]
+    SYS --> MK8S[volterra_k8s_cluster o cluster reutilizado]
+    Site --> MK8S
 
-El workflow crea dos `volterra_http_loadbalancer` dentro del namespace de aplicacion:
+    APPNS --> KLB[volterra_http_loadbalancer kiosk]
+    APPNS --> RLB[volterra_http_loadbalancer recommendations]
+    APPNS --> KOP[volterra_origin_pool kiosk]
+    APPNS --> ROP[volterra_origin_pool recommendations]
 
-- uno para `kiosk.<namespace>.buytime.internal`
-- otro para `recommendations.<namespace>.buytime.internal`
+    KLB --> KOP
+    RLB --> ROP
+```
 
-Cada load balancer usa un `origin pool` distinto:
+### 3. Plano de infraestructura en AWS
 
-- `kiosk` apunta al servicio Kubernetes `kiosk-service.<namespace>` dentro del sitio
-- `recommendations` apunta a un origen DNS externo definido por variables del modulo
+Este workflow materializa un branch sencillo en una sola VPC y una sola subnet.
 
-Importante:
+Recursos principales:
 
-- `dns_volterra_managed = false`
-- eso significa que XC no crea automaticamente registros DNS resolvibles para esos dominios
-- por eso la VM kiosk necesita entradas de `hosts` para poder resolverlos localmente
+- `aws_vpc`
+- `aws_subnet`
+- `aws_instance.kiosk`
+- `aws_security_group.kiosk_sg`
+- `aws_key_pair.kiosk_key_pair`
+- nodo del App Stack site desplegado por XC dentro de la misma subnet
 
-### Topologia de exposicion y trafico
+Características importantes:
+
+- la VM kiosk tiene IP publica para RDP
+- el App Stack site usa una sola interfaz y queda sin `internet VIP`
+- tanto la VM como el nodo del sitio comparten la red privada del branch
+- el workflow consulta la interfaz de red del App Stack para descubrir su IP privada
+
+```mermaid
+flowchart TB
+    subgraph VPC[AWS VPC CIDR VPC_CIDR_MK8S]
+        subgraph Subnet[Subnet cidrsubnet(VPC, 8, 10)]
+            AppNode[App Stack site node]
+            VM[Windows kiosk VM]
+        end
+        SG[Security Group kiosk_sg]
+        KP[EC2 key pair]
+    end
+
+    SG --> VM
+    KP --> VM
+    VM -. RDP 3389 publico .-> Internet[Internet para administracion]
+    VM -->|trafico privado| AppNode
+```
+
+### 4. Plano de workloads en mK8s
+
+Dentro del mK8s, el workflow implementa una aplicacion tipo branch kiosk basada en tres componentes.
 
 ```mermaid
 flowchart LR
-    VM[Windows kiosk VM] -->|HTTP Host: kiosk.namespace.buytime.internal| LBK[XC HTTP LB kiosk]
-    VM -->|HTTP Host: recommendations.namespace.buytime.internal| LBR[XC HTTP LB recommendations]
-    LBK --> OPK[Origin pool kiosk]
-    OPK --> KSVC[kiosk-service namespace:8080]
-    KSVC --> KPOD[kiosk pod]
-    KPOD --> WPSVC[wordpress-service:8080]
-    WPSVC --> WPOD[wordpress pod]
-    WPOD --> MSVC[mysql-service:3306]
-    MSVC --> MPOD[mysql pod]
-    LBR --> OPR[Origin pool recommendations]
-    OPR --> EXT[Servicio externo de recomendaciones]
+    subgraph NS[Namespace XC_NAMESPACE]
+        MDP[mysql-deployment]
+        MSVC[mysql-service:3306]
+        WDP[wordpress-deployment]
+        WSVC[wordpress-service:8080]
+        KDP[kiosk-deployment]
+        KSVC[kiosk-service:8080]
+    end
+
+    MDP --> MSVC
+    WDP --> WSVC
+    KDP --> KSVC
+    WDP -->|WORDPRESS_DB_HOST=mysql-service| MSVC
+    KDP -->|reverse proxy| WSVC
 ```
 
-#### 7. Capa de acceso desde la VM kiosk
+#### Funcion de cada componente
 
-La VM Windows kiosk cumple dos funciones:
+- `mysql-deployment`: base de datos para WordPress
+- `wordpress-deployment`: aplicacion principal de BuyTime basada en WooCommerce
+- `kiosk-deployment`: reverse proxy frontal que expone la experiencia kiosk
+- `mysql-service`: servicio ClusterIP para la base de datos
+- `wordpress-service`: servicio ClusterIP para la app WordPress
+- `kiosk-service`: servicio ClusterIP consumido por el HTTP LB interno de XC
 
-- punto de entrada operativo para validar la aplicacion por RDP
-- cliente interno del sitio para probar resolucion y trafico HTTP hacia los dominios del laboratorio
+## Topologia de exposicion de servicios
 
-El `user_data` de la VM deja preparada la experiencia de prueba:
+La exposicion de la aplicacion se hace con dos HTTP load balancers internos en XC, ambos anunciados en el App Stack site.
 
-- opcionalmente fija la contraseña de `Administrator`
-- agrega al archivo `hosts` la IP privada del App Stack site
-- mapea esa IP a:
-  - `kiosk.<namespace>.buytime.internal`
-  - `recommendations.<namespace>.buytime.internal`
+### Dominio 1: kiosk
 
-Con eso, la VM puede abrir la aplicacion por nombre sin depender de un DNS externo adicional.
+- dominio: `kiosk.<namespace>.buytime.internal`
+- tipo: `volterra_http_loadbalancer`
+- origen: `kiosk-service.<namespace>` sobre el sitio App Stack
+- puerto de origen: `8080`
 
-## Recorrido extremo a extremo de una solicitud
+### Dominio 2: recommendations
 
-Cuando un usuario prueba la aplicacion desde la VM kiosk, el camino logico es este:
+- dominio: `recommendations.<namespace>.buytime.internal`
+- tipo: `volterra_http_loadbalancer`
+- origen: DNS publico externo configurado en el modulo
+- puerto de origen: variable `recommendations_origin_port`
+- TLS habilitado hacia el origen externo
 
-1. la VM resuelve `kiosk.<namespace>.buytime.internal` usando `hosts`
-2. el trafico llega al HTTP load balancer interno de XC
-3. el load balancer selecciona el `origin pool` del kiosco
-4. el origin pool entrega la solicitud a `kiosk-service`
-5. el pod `kiosk` reenvia la experiencia hacia WordPress
-6. WordPress consulta a MySQL para obtener contenido
-7. la respuesta vuelve por la misma ruta hasta la VM
+### Vista detallada de exposicion
 
-### Diagrama de secuencia simplificado
+```mermaid
+flowchart LR
+    VM[Windows kiosk VM]
+
+    subgraph XCAPP[XC Application Namespace]
+        KLB[HTTP LB kiosk]
+        KOP[Origin Pool kiosk]
+        RLB[HTTP LB recommendations]
+        ROP[Origin Pool recommendations]
+    end
+
+    subgraph MKSVC[mK8s services]
+        KSVC[kiosk-service.namespace:8080]
+        WSVC[wordpress-service.namespace:8080]
+        MSVC[mysql-service.namespace:3306]
+    end
+
+    EXTREC[External recommendations service]
+
+    VM -->|Host kiosk.namespace.buytime.internal| KLB
+    VM -->|Host recommendations.namespace.buytime.internal| RLB
+    KLB --> KOP
+    KOP --> KSVC
+    KSVC --> WSVC
+    WSVC --> MSVC
+    RLB --> ROP
+    ROP --> EXTREC
+```
+
+## Topologia DNS y resolucion de nombres
+
+Este punto es importante porque es distinto de lo que a veces se asume al ver un load balancer en XC.
+
+Lo que implementa el workflow es esto:
+
+- crea dominios lógicos en los HTTP load balancers
+- **no** crea DNS administrado por XC para esos dominios
+- usa `dns_volterra_managed = false`
+- resuelve el acceso desde la VM kiosk escribiendo entradas en `hosts`
+
+Consecuencia directa:
+
+- los nombres existen como hostnames configurados en el LB
+- la resolucion local desde la VM depende del archivo `hosts`
+- el trafico funciona por nombre dentro de la VM porque el `user_data` mapea ambos nombres a la IP privada del App Stack site
+
+### Vista de resolucion local
+
+```mermaid
+flowchart LR
+    Hosts[Archivo hosts en Windows] --> Name1[kiosk.namespace.buytime.internal]
+    Hosts --> Name2[recommendations.namespace.buytime.internal]
+    Name1 --> AppIP[IP privada del App Stack site]
+    Name2 --> AppIP
+    AppIP --> XCInside[VIP interno anunciado en el sitio]
+```
+
+## Recorrido extremo a extremo del kiosco
+
+Cuando el operador usa la aplicacion desde la VM Windows, el flujo real es este:
+
+1. la VM resuelve `kiosk.<namespace>.buytime.internal` via `hosts`
+2. la solicitud se dirige a la IP privada del App Stack site
+3. XC recibe el trafico en el HTTP load balancer `kiosk`
+4. el load balancer selecciona el origin pool del kiosco
+5. el origin pool enruta a `kiosk-service.<namespace>`
+6. el pod `kiosk` actua como proxy hacia WordPress
+7. WordPress obtiene datos desde MySQL
+8. la respuesta vuelve al navegador de la VM
 
 ```mermaid
 sequenceDiagram
     participant VM as Windows kiosk VM
+    participant Hosts as hosts local
+    participant Site as App Stack site IP
     participant LB as XC HTTP LB kiosk
     participant KS as kiosk-service
     participant KP as kiosk pod
@@ -280,17 +372,76 @@ sequenceDiagram
     participant WP as wordpress pod
     participant DB as mysql-service/mysql pod
 
-    VM->>LB: GET / Host=kiosk.namespace.buytime.internal
+    VM->>Hosts: Resolver kiosk.namespace.buytime.internal
+    Hosts-->>VM: IP privada del App Stack site
+    VM->>Site: GET / Host=kiosk.namespace.buytime.internal
+    Site->>LB: Entregar solicitud al HTTP LB kiosk
     LB->>KS: Route request
-    KS->>KP: Forward to pod
-    KP->>WS: Proxy request
-    WS->>WP: Forward to pod
-    WP->>DB: Query content/data
-    DB-->>WP: Results
-    WP-->>KP: HTML response
-    KP-->>LB: Proxied response
-    LB-->>VM: Page response
+    KS->>KP: Forward to kiosk pod
+    KP->>WS: Proxy to wordpress-service
+    WS->>WP: Forward to wordpress pod
+    WP->>DB: Query MySQL
+    DB-->>WP: Resultados
+    WP-->>KP: HTML generado
+    KP-->>LB: Respuesta proxied
+    LB-->>VM: Pagina BuyTime
 ```
+
+## Recorrido extremo a extremo del servicio de recomendaciones
+
+El flujo de recomendaciones es distinto porque no termina dentro del mK8s del branch.
+
+1. la VM o la aplicacion usa `recommendations.<namespace>.buytime.internal`
+2. XC recibe la solicitud en el HTTP load balancer `recommendations`
+3. ese load balancer usa un origin pool con `public_name`
+4. el trafico sale hacia el servicio externo de recomendaciones por TLS
+
+```mermaid
+sequenceDiagram
+    participant VM as Windows kiosk VM o app
+    participant Hosts as hosts local
+    participant Site as App Stack site IP
+    participant LB as XC HTTP LB recommendations
+    participant Pool as Origin pool recommendations
+    participant EXT as External recommendations service
+
+    VM->>Hosts: Resolver recommendations.namespace.buytime.internal
+    Hosts-->>VM: IP privada del App Stack site
+    VM->>Site: HTTP Host=recommendations.namespace.buytime.internal
+    Site->>LB: Entregar solicitud al LB
+    LB->>Pool: Seleccionar origin pool
+    Pool->>EXT: TLS hacia DNS externo configurado
+    EXT-->>VM: Respuesta del servicio de recomendaciones
+```
+
+## Mapa de correspondencia con la guia de referencia
+
+Para evitar confusion, esta es la equivalencia entre la narrativa del repo original y lo que este workflow automatiza realmente.
+
+- `Create mK8s resource`: si, lo crea o reutiliza
+- `Create app stack`: si, lo crea
+- `Get mK8s Kubeconfig`: si, lo genera de forma temporal durante el workflow
+- `Create AWS CE site`: no, este workflow no lo implementa
+- `Deploy kiosk`: si, mediante `module_1`
+- `Create branch namespace`: si, lo crea o reutiliza desde Terraform y Kubernetes
+- `Create HTTP LB for kiosk`: si
+- `HTTP LB recommendations module`: si
+- `Module 2`: no
+- `Module 3`: no
+
+## Conclusiones de topologia
+
+La arquitectura que implementa este workflow es la de una **Retail Branch App Stack deployment** con estas propiedades clave:
+
+- una sola sucursal en AWS
+- un solo App Stack site
+- un solo mK8s asociado al branch
+- una VM de prueba dentro de la misma red del branch
+- una aplicacion 3-tier en mK8s para el kiosco
+- exposicion interna por HTTP LB de XC
+- extension funcional hacia un servicio externo de recomendaciones
+
+Eso la convierte en una automatizacion fiel al tramo inicial del escenario BuyTime, pero todavia acotada al branch y no al resto del diseño multicloud completo de la guia original.
 
 ## Job prerequisites
 
