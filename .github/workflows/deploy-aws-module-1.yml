@@ -362,12 +362,13 @@ jobs:
           attempts=80
           sleep_seconds=15
           cluster_info_log="$RUNNER_TEMP/mk8s-cluster-info.log"
-          api_discovery_log="$RUNNER_TEMP/mk8s-api-discovery.log"
+          namespace_probe_log="$RUNNER_TEMP/mk8s-namespace-probe.log"
 
           for attempt in $(seq 1 "$attempts"); do
             if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/api >"$api_discovery_log" 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name >"$namespace_probe_log" 2>&1; then
               cat "$cluster_info_log"
+              cat "$namespace_probe_log"
               exit 0
             fi
 
@@ -375,15 +376,15 @@ jobs:
             if [[ -s "$cluster_info_log" ]]; then
               tail -n 5 "$cluster_info_log"
             fi
-            if [[ -s "$api_discovery_log" ]]; then
-              tail -n 5 "$api_discovery_log"
+            if [[ -s "$namespace_probe_log" ]]; then
+              tail -n 5 "$namespace_probe_log"
             fi
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the mK8s API server to become ready."
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get --raw=/api || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name || true
           exit 1
 
       - name: Terraform init module 1
