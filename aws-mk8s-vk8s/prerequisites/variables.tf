@@ -62,4 +62,15 @@ variable "windows_admin_password" {
   type        = string
   sensitive   = true
   default     = ""
+
+  validation {
+    condition = var.windows_admin_password == "" || (
+      length(var.windows_admin_password) >= 8 &&
+      can(regex("[A-Z]", var.windows_admin_password)) &&
+      can(regex("[a-z]", var.windows_admin_password)) &&
+      can(regex("[0-9]", var.windows_admin_password)) &&
+      can(regex("[^A-Za-z0-9]", var.windows_admin_password))
+    )
+    error_message = "windows_admin_password must be empty or be at least 8 characters long and include uppercase, lowercase, numeric, and special characters. Example: Password123!."
+  }
 }

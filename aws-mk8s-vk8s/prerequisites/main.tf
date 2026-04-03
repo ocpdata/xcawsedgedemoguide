@@ -1,21 +1,28 @@
 locals {
-  base_name          = join("-", compact([var.project_prefix, var.xc_namespace]))
-  aws_site_name      = "aws-${local.base_name}"
-  cloud_cred_name    = "${local.base_name}-aws-cred"
-  k8s_cluster_name   = "${local.aws_site_name}-mk8s"
-  vpc_name           = "${local.base_name}-vpc"
-  subnet_a_cidr      = cidrsubnet(var.vpc_cidr, 8, 10)
-  app_stack_location = "${local.base_name}-app-stack"
-  effective_namespace = var.create_xc_namespace ? volterra_namespace.app_namespace[0].name : data.volterra_namespace.app_namespace[0].name
+  base_name                   = join("-", compact([var.project_prefix, var.xc_namespace]))
+  aws_site_name               = "aws-${local.base_name}"
+  cloud_cred_name             = "${local.base_name}-aws-cred"
+  k8s_cluster_name            = "${local.aws_site_name}-mk8s"
+  vpc_name                    = "${local.base_name}-vpc"
+  subnet_a_cidr               = cidrsubnet(var.vpc_cidr, 8, 10)
+  app_stack_location          = "${local.base_name}-app-stack"
+  effective_namespace         = var.create_xc_namespace ? volterra_namespace.app_namespace[0].name : data.volterra_namespace.app_namespace[0].name
   effective_mk8s_cluster_name = trimspace(var.existing_mk8s_cluster_name) != "" ? trimspace(var.existing_mk8s_cluster_name) : local.k8s_cluster_name
-  windows_admin_password_ps = replace(var.windows_admin_password, "'", "''")
-  windows_user_data = trimspace(var.windows_admin_password) != "" ? join("\n", [
+  kiosk_domain                = format("kiosk.%s.buytime.internal", local.effective_namespace)
+  recommendations_domain      = format("recommendations.%s.buytime.internal", local.effective_namespace)
+  windows_admin_password_ps   = replace(var.windows_admin_password, "'", "''")
+  windows_user_data = join("\n", concat([
     "<powershell>",
     "$ErrorActionPreference = \"Stop\"",
+    ], trimspace(var.windows_admin_password) != "" ? [
     format("$securePassword = ConvertTo-SecureString '%s' -AsPlainText -Force", local.windows_admin_password_ps),
     "Set-LocalUser -Name \"Administrator\" -Password $securePassword",
+    ] : [], [
+    "$hostsPath = 'C:\\Windows\\System32\\drivers\\etc\\hosts'",
+    format("Add-Content -Path $hostsPath -Value '%s %s'", data.aws_network_interface.appstack.private_ip, local.kiosk_domain),
+    format("Add-Content -Path $hostsPath -Value '%s %s'", data.aws_network_interface.appstack.private_ip, local.recommendations_domain),
     "</powershell>",
-  ]) : null
+  ]))
 }
 
 resource "volterra_namespace" "app_namespace" {
@@ -119,12 +126,12 @@ resource "volterra_aws_vpc_site" "appstack" {
     vpc_id = aws_vpc.vpc.id
   }
 
-  direct_connect_disabled   = true
-  instance_type             = "t3.xlarge"
-  disable_internet_vip      = true
-  logs_streaming_disabled   = true
-  ssh_key                   = tls_private_key.appstack_key.public_key_openssh
-  no_worker_nodes           = true
+  direct_connect_disabled = true
+  instance_type           = "t3.xlarge"
+  disable_internet_vip    = true
+  logs_streaming_disabled = true
+  ssh_key                 = tls_private_key.appstack_key.public_key_openssh
+  no_worker_nodes         = true
 
   voltstack_cluster {
     aws_certified_hw = "aws-byol-voltstack-combo"
