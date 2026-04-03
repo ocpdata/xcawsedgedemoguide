@@ -8,6 +8,14 @@ locals {
   app_stack_location = "${local.base_name}-app-stack"
   effective_namespace = var.create_xc_namespace ? volterra_namespace.app_namespace[0].name : data.volterra_namespace.app_namespace[0].name
   effective_mk8s_cluster_name = trimspace(var.existing_mk8s_cluster_name) != "" ? trimspace(var.existing_mk8s_cluster_name) : local.k8s_cluster_name
+  windows_admin_password_ps = replace(var.windows_admin_password, "'", "''")
+  windows_user_data = trimspace(var.windows_admin_password) != "" ? join("\n", [
+    "<powershell>",
+    "$ErrorActionPreference = \"Stop\"",
+    format("$securePassword = ConvertTo-SecureString '%s' -AsPlainText -Force", local.windows_admin_password_ps),
+    "Set-LocalUser -Name \"Administrator\" -Password $securePassword",
+    "</powershell>",
+  ]) : null
 }
 
 resource "volterra_namespace" "app_namespace" {
@@ -241,6 +249,7 @@ resource "aws_instance" "kiosk" {
   key_name                    = aws_key_pair.kiosk_key_pair.key_name
   associate_public_ip_address = true
   get_password_data           = true
+  user_data                   = local.windows_user_data
 
   root_block_device {
     volume_size           = 30
@@ -299,5 +308,5 @@ output "kiosk_user" {
 output "kiosk_password" {
   description = "Decrypted Windows administrator password for the kiosk VM."
   sensitive   = true
-  value       = rsadecrypt(aws_instance.kiosk.password_data, tls_private_key.kiosk_key_pair.private_key_pem)
+  value       = trimspace(var.windows_admin_password) != "" ? var.windows_admin_password : rsadecrypt(aws_instance.kiosk.password_data, tls_private_key.kiosk_key_pair.private_key_pem)
 }

@@ -56,3 +56,10 @@ variable "existing_mk8s_cluster_name" {
   type        = string
   default     = ""
 }
+
+variable "windows_admin_password" {
+  description = "Optional password to assign to the Windows Administrator account on the kiosk VM."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
