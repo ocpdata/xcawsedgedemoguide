@@ -24,6 +24,9 @@ jobs:
       app_stack_name: ${{ steps.collect.outputs.app_stack_name }}
       mk8s_cluster_name: ${{ steps.collect.outputs.mk8s_cluster_name }}
       xc_namespace: ${{ steps.collect.outputs.xc_namespace }}
+      appstack_private_ip: ${{ steps.collect.outputs.appstack_private_ip }}
+      kiosk_address: ${{ steps.collect.outputs.kiosk_address }}
+      kiosk_user: ${{ steps.collect.outputs.kiosk_user }}
       workspace_prefix: ${{ steps.naming.outputs.workspace_prefix }}
     env:
       VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
@@ -161,6 +164,9 @@ jobs:
           echo "app_stack_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw app_stack_name)" >> "$GITHUB_OUTPUT"
           echo "mk8s_cluster_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw mk8s_cluster_name)" >> "$GITHUB_OUTPUT"
           echo "xc_namespace=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw xc_namespace)" >> "$GITHUB_OUTPUT"
+          echo "appstack_private_ip=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw appstack_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "kiosk_address=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw kiosk_address)" >> "$GITHUB_OUTPUT"
+          echo "kiosk_user=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw kiosk_user)" >> "$GITHUB_OUTPUT"
 
   module_1:
     name: Apply module 1
@@ -173,6 +179,8 @@ jobs:
       TF_VAR_xc_namespace: ${{ needs.prerequisites.outputs.xc_namespace }}
       TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
       TF_VAR_app_stack_name: ${{ needs.prerequisites.outputs.app_stack_name }}
+      RECOMMENDATIONS_ORIGIN_DNS: ${{ vars.RECOMMENDATIONS_ORIGIN_DNS }}
+      RECOMMENDATIONS_ORIGIN_PORT: ${{ vars.RECOMMENDATIONS_ORIGIN_PORT }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -193,6 +201,17 @@ jobs:
           set -euo pipefail
           workspace_prefix='${{ needs.prerequisites.outputs.workspace_prefix }}'
           echo "MODULE1_WORKSPACE=${workspace_prefix}-module-1" >> "$GITHUB_ENV"
+
+      - name: Normalize recommendations origin settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin_dns="${RECOMMENDATIONS_ORIGIN_DNS:-recommendations.buytime.sr.f5-cloud-demo.com}"
+          origin_port="${RECOMMENDATIONS_ORIGIN_PORT:-443}"
+          echo "RECOMMENDATIONS_ORIGIN_DNS=${origin_dns}" >> "$GITHUB_ENV"
+          echo "RECOMMENDATIONS_ORIGIN_PORT=${origin_port}" >> "$GITHUB_ENV"
+          echo "TF_VAR_recommendations_origin_dns=${origin_dns}" >> "$GITHUB_ENV"
+          echo "TF_VAR_recommendations_origin_port=${origin_port}" >> "$GITHUB_ENV"
 
       - name: Decode XC API credential
         shell: bash
@@ -432,6 +451,114 @@ jobs:
 
             exit 1
           done
+
+      - name: Collect module 1 outputs
+        id: module_outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "kiosk_domain=$(terraform -chdir=aws-mk8s-vk8s/module-1 output -raw kiosk_domain)" >> "$GITHUB_OUTPUT"
+          echo "recommendations_domain=$(terraform -chdir=aws-mk8s-vk8s/module-1 output -raw recommendations_domain)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate mK8s workloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace='${{ needs.prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+
+          kubectl --kubeconfig "$kubeconfig_path" get namespace "$namespace"
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get deployments,svc -o wide
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" rollout status deployment/mysql-deployment --timeout=10m
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" rollout status deployment/wordpress-deployment --timeout=10m
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" rollout status deployment/kiosk-deployment --timeout=10m
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get pods -o wide
+
+      - name: Smoke test kiosk application
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace='${{ needs.prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          kiosk_domain='${{ steps.module_outputs.outputs.kiosk_domain }}'
+          forward_log="$RUNNER_TEMP/kiosk-port-forward.log"
+          home_body="$RUNNER_TEMP/kiosk-home.html"
+          admin_headers="$RUNNER_TEMP/kiosk-admin.headers"
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" port-forward service/kiosk-service 18080:8080 >"$forward_log" 2>&1 &
+          forward_pid=$!
+          cleanup() {
+            kill "$forward_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 20); do
+            if curl --silent --show-error --fail -H "Host: $kiosk_domain" http://127.0.0.1:18080/ >"$home_body" 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+
+          if ! grep -Eiq '<title>BuyTime</title>|BuyTime|WooCommerce|WordPress' "$home_body"; then
+            echo "::error::Kiosk home page smoke test did not return expected content."
+            cat "$home_body"
+            exit 1
+          fi
+
+          curl --silent --show-error -I -H "Host: $kiosk_domain" http://127.0.0.1:18080/wp-admin/ >"$admin_headers"
+          if ! grep -Eq '^HTTP/[0-9.]+ (200|301|302)' "$admin_headers"; then
+            echo "::error::WordPress admin endpoint did not return an expected status."
+            cat "$admin_headers"
+            exit 1
+          fi
+
+      - name: Verify recommendations origin reachability
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin_dns="${RECOMMENDATIONS_ORIGIN_DNS:-recommendations.buytime.sr.f5-cloud-demo.com}"
+          origin_port="${RECOMMENDATIONS_ORIGIN_PORT:-443}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --max-time 20 \
+            "https://${origin_dns}:${origin_port}/" || true)"
+
+          if [[ "$http_code" == "000" || -z "$http_code" ]]; then
+            echo "::error::Unable to reach the recommendations origin ${origin_dns}:${origin_port}."
+            exit 1
+          fi
+
+          echo "Recommendations origin responded with HTTP ${http_code}."
+
+      - name: Write deployment summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Deploy Summary"
+            echo
+            echo "- App Stack site: ${{ needs.prerequisites.outputs.app_stack_name }}"
+            echo "- XC namespace: ${{ needs.prerequisites.outputs.xc_namespace }}"
+            echo "- mK8s cluster: ${{ needs.prerequisites.outputs.mk8s_cluster_name }}"
+            echo "- App Stack private IP: ${{ needs.prerequisites.outputs.appstack_private_ip }}"
+            echo "- Kiosk VM public IP: ${{ needs.prerequisites.outputs.kiosk_address }}"
+            echo "- Kiosk VM user: ${{ needs.prerequisites.outputs.kiosk_user }}"
+            echo "- Kiosk domain: ${{ steps.module_outputs.outputs.kiosk_domain }}"
+            echo "- Recommendations domain: ${{ steps.module_outputs.outputs.recommendations_domain }}"
+            echo
+            echo "### Notes"
+            echo
+            echo "- The workflow validates deployment readiness for mysql, wordpress, and kiosk."
+            echo "- The kiosk app is smoke-tested through the in-cluster service using the expected Host header."
+            echo "- The recommendations origin endpoint is checked for HTTP reachability."
+            echo "- The kubeconfig used by the workflow is temporary and is revoked at the end of the job."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Revoke temporary kubeconfig credential
         if: always()
