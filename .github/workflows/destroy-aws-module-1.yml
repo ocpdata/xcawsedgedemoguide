@@ -1,0 +1,253 @@
+name: Destroy AWS Prerequisites And Module 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
+  VPC_CIDR_MK8S: ${{ vars.VPC_CIDR_MK8S }}
+  XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
+  XC_SERVICE_CREDENTIAL_ROLE: ${{ vars.XC_SERVICE_CREDENTIAL_ROLE }}
+
+jobs:
+  destroy_module_1:
+    name: Destroy module 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR_MK8S XC_NAMESPACE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+
+      - name: Compute destroy names
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+          echo "MODULE1_WORKSPACE=${workspace_prefix}-module-1" >> "$GITHUB_ENV"
+          echo "APP_STACK_NAME=aws-${PROJECT_PREFIX}-${XC_NAMESPACE}" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Terraform init kubeconfig helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig init
+
+      - name: Generate site kubeconfig for destroy
+        id: kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix_part="$(printf '%s' "$PROJECT_PREFIX" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | cut -c1-12)"
+          prefix_part="${prefix_part#-}"
+          prefix_part="${prefix_part%-}"
+          if [[ -z "$prefix_part" ]]; then
+            prefix_part="xcaws"
+          fi
+          run_suffix="${GITHUB_RUN_ID:(-8)}"
+          credential_name="${prefix_part}-${run_suffix}-skcfg"
+          credential_name="${credential_name#-}"
+          credential_name="${credential_name%-}"
+          candidates=()
+          if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
+            candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
+          fi
+          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+
+          selected_role=""
+          for role in "${candidates[@]}"; do
+            [[ -z "$role" ]] && continue
+            if [[ " ${tried_roles:-} " == *" $role "* ]]; then
+              continue
+            fi
+            tried_roles="${tried_roles:-} $role"
+
+            apply_log="$RUNNER_TEMP/kubeconfig-apply-${role}.log"
+            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+              -var="project_prefix=${PROJECT_PREFIX}" \
+              -var="site_name=${APP_STACK_NAME}" \
+              -var="xc_namespace=${XC_NAMESPACE}" \
+              -var="service_credential_role=${role}" \
+              -var="credential_name=${credential_name}" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              >"$apply_log" 2>&1
+            then
+              selected_role="$role"
+              break
+            fi
+
+            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              cat "$apply_log"
+              exit 1
+            fi
+          done
+
+          if [[ -z "$selected_role" ]]; then
+            echo "::error::Unable to create the XC site kubeconfig credential with any known role."
+            exit 1
+          fi
+
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/mk8s-kubeconfig.yaml"
+          echo "credential_name=${credential_name}" >> "$GITHUB_OUTPUT"
+          echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
+          echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init module 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/module-1.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${MODULE1_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/module-1 init \
+            -backend-config="$RUNNER_TEMP/module-1.backend.hcl"
+
+      - name: Terraform destroy module 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/module-1 destroy -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="xc_namespace=${XC_NAMESPACE}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+            -var="kubeconfig_path=${{ steps.kubeconfig.outputs.kubeconfig_path }}" \
+            -var="app_stack_name=${APP_STACK_NAME}"
+
+      - name: Revoke temporary kubeconfig credential
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig destroy -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="site_name=${APP_STACK_NAME}" \
+            -var="xc_namespace=${XC_NAMESPACE}" \
+            -var="service_credential_role=${{ steps.kubeconfig.outputs.service_credential_role }}" \
+            -var="credential_name=${{ steps.kubeconfig.outputs.credential_name }}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
+
+  destroy_prerequisites:
+    if: ${{ always() }}
+    name: Destroy prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: destroy_module_1
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_MK8S }}
+      TF_VAR_existing_mk8s_cluster_name: ${{ vars.EXISTING_MK8S_CLUSTER_NAME }}
+      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR_MK8S XC_NAMESPACE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+
+      - name: Compute workspace names
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+          echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Terraform init prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${PREREQUISITES_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
+            -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
+
+      - name: Terraform destroy prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve
