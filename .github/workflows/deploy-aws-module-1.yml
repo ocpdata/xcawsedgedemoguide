@@ -31,6 +31,7 @@ jobs:
       TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_MK8S }}
+      TF_VAR_existing_mk8s_cluster_name: ${{ vars.EXISTING_MK8S_CLUSTER_NAME }}
       TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
       TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
       TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}

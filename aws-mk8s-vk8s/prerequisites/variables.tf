@@ -50,3 +50,9 @@ variable "vpc_cidr" {
     error_message = "vpc_cidr must be a non-empty valid CIDR block, for example 10.0.0.0/16."
   }
 }
+
+variable "existing_mk8s_cluster_name" {
+  description = "Optional existing XC managed k8s cluster name to reuse instead of creating a new one."
+  type        = string
+  default     = ""
+}

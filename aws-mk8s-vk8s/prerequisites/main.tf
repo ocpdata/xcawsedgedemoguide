@@ -7,6 +7,7 @@ locals {
   subnet_a_cidr      = cidrsubnet(var.vpc_cidr, 8, 10)
   app_stack_location = "${local.base_name}-app-stack"
   effective_namespace = var.create_xc_namespace ? volterra_namespace.app_namespace[0].name : data.volterra_namespace.app_namespace[0].name
+  effective_mk8s_cluster_name = trimspace(var.existing_mk8s_cluster_name) != "" ? trimspace(var.existing_mk8s_cluster_name) : local.k8s_cluster_name
 }
 
 resource "volterra_namespace" "app_namespace" {
@@ -63,6 +64,8 @@ resource "volterra_cloud_credentials" "aws_cred" {
 }
 
 resource "volterra_k8s_cluster" "mk8s" {
+  count = trimspace(var.existing_mk8s_cluster_name) == "" ? 1 : 0
+
   name      = local.k8s_cluster_name
   namespace = "system"
 
@@ -127,7 +130,7 @@ resource "volterra_aws_vpc_site" "appstack" {
     }
 
     k8s_cluster {
-      name = volterra_k8s_cluster.mk8s.name
+      name = local.effective_mk8s_cluster_name
     }
   }
 
@@ -260,7 +263,7 @@ output "app_stack_name" {
 
 output "mk8s_cluster_name" {
   description = "XC managed k8s cluster name."
-  value       = volterra_k8s_cluster.mk8s.name
+  value       = local.effective_mk8s_cluster_name
 }
 
 output "xc_namespace" {
