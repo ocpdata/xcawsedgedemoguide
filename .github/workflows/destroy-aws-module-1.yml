@@ -2,6 +2,15 @@ name: Destroy AWS Prerequisites And Module 1
 
 on:
   workflow_dispatch:
+    inputs:
+      destroy_scope:
+        description: Resources to destroy
+        required: true
+        default: full-stack
+        type: choice
+        options:
+          - full-stack
+          - kiosk-vm-only
 
 permissions:
   contents: read
@@ -18,6 +27,7 @@ env:
 jobs:
   destroy_module_1:
     name: Destroy module 1
+    if: ${{ github.event.inputs.destroy_scope == 'full-stack' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     continue-on-error: true
@@ -178,7 +188,7 @@ jobs:
             -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
 
   destroy_prerequisites:
-    if: ${{ always() }}
+    if: ${{ always() && github.event.inputs.destroy_scope == 'full-stack' }}
     name: Destroy prerequisites
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -251,3 +261,78 @@ jobs:
         run: |
           set -euo pipefail
           terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve
+
+  destroy_kiosk_vm:
+    if: ${{ github.event.inputs.destroy_scope == 'kiosk-vm-only' }}
+    name: Destroy kiosk VM only
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_MK8S }}
+      TF_VAR_existing_mk8s_cluster_name: ${{ vars.EXISTING_MK8S_CLUSTER_NAME }}
+      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR_MK8S XC_NAMESPACE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+
+      - name: Compute workspace names
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+          echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Terraform init prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${PREREQUISITES_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
+            -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
+
+      - name: Terraform destroy kiosk VM only
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve \
+            -target=aws_instance.kiosk
