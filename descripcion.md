@@ -54,6 +54,244 @@ flowchart TD
     D --> E[Fin del deploy]
 ```
 
+## Topologia de la arquitectura desplegada
+
+El workflow no solo ejecuta Terraform en dos etapas; en conjunto construye una arquitectura distribuida entre AWS y F5 Distributed Cloud.
+
+En terminos practicos, la topologia final queda compuesta por estas capas:
+
+- una VPC en AWS para el laboratorio
+- una subnet donde viven el App Stack site y la VM kiosk
+- un sitio XC tipo `aws_vpc_site` asociado a esa VPC
+- un cluster mK8s administrado por XC, creado o reutilizado
+- una VM Windows kiosk con IP publica para acceso RDP
+- un namespace de aplicacion en mK8s
+- tres workloads Kubernetes: `mysql`, `wordpress` y `kiosk`
+- dos HTTP load balancers internos de XC
+- dos dominios internos: `kiosk.<namespace>.buytime.internal` y `recommendations.<namespace>.buytime.internal`
+
+### Vista topologica general
+
+```mermaid
+flowchart LR
+    U[Usuario u operador] --> GHA[GitHub Actions deploy workflow]
+    GHA --> TFC[Terraform Cloud workspaces]
+    GHA --> XC[F5 Distributed Cloud]
+    GHA --> AWS[AWS]
+
+    subgraph AWSVPC[AWS VPC del laboratorio]
+        subgraph SUBNET[Subnet principal]
+            APP[XC App Stack site node]
+            VM[Windows kiosk VM]
+        end
+    end
+
+    subgraph XCCONTROL[F5 XC control plane]
+        NS[XC namespace de aplicacion]
+        MK8S[mK8s administrado por XC]
+        LB1[HTTP Load Balancer kiosk]
+        LB2[HTTP Load Balancer recommendations]
+        OP1[Origin pool kiosk-service]
+        OP2[Origin pool externo recommendations]
+    end
+
+    APP --> MK8S
+    NS --> LB1
+    NS --> LB2
+    LB1 --> OP1
+    LB2 --> OP2
+    OP1 --> MK8S
+    VM --> LB1
+    VM --> LB2
+```
+
+### Capas de la arquitectura
+
+#### 1. Capa de automatizacion
+
+La ejecucion empieza en GitHub Actions y usa Terraform Cloud como backend remoto.
+
+- GitHub Actions orquesta el orden de despliegue
+- Terraform Cloud conserva el estado remoto en workspaces separados
+- F5 XC provee el control plane del sitio, del mK8s y de los load balancers
+- AWS hospeda la red, la VM kiosk y la infraestructura del App Stack site
+
+#### 2. Capa de red en AWS
+
+El modulo `prerequisites` crea la base de red:
+
+- una `aws_vpc`
+- una `aws_subnet` principal en una sola zona de disponibilidad
+- una `aws_security_group` para la VM kiosk
+- una `aws_instance` Windows para pruebas del laboratorio
+
+La VM kiosk tiene:
+
+- IP publica para acceso por RDP
+- acceso de salida completo
+- resolución local reforzada mediante entradas en `hosts`
+
+El App Stack site queda desplegado dentro de la misma subnet, por lo que la VM y el sitio comparten la red privada del laboratorio.
+
+#### 3. Capa de sitio en F5 XC
+
+Sobre esa VPC, el workflow crea un recurso `volterra_aws_vpc_site` que representa el App Stack site.
+
+Características relevantes del sitio:
+
+- usa credenciales AWS registradas en XC
+- se ancla a la VPC y subnet creadas por Terraform
+- despliega hardware `aws-byol-voltstack-combo`
+- opera sin `internet VIP`
+- enlaza el sitio con un mK8s administrado por XC
+
+Eso significa que XC controla el plano del sitio, mientras AWS aloja la infraestructura subyacente.
+
+#### 4. Capa de Kubernetes administrado
+
+El sitio queda asociado a un mK8s con dominio local `buytime.internal`.
+
+Ese mK8s puede:
+
+- crearse desde cero con `volterra_k8s_cluster`
+- reutilizar un cluster existente mediante `EXISTING_MK8S_CLUSTER_NAME`
+
+El workflow espera explicitamente a que el sitio y luego el API del mK8s esten realmente listos antes de aplicar cargas de trabajo.
+
+#### 5. Capa de aplicacion en Kubernetes
+
+El modulo `module_1` aplica manifiestos Kubernetes en el namespace definido por `XC_NAMESPACE`.
+
+Los objetos mas importantes son:
+
+- `Namespace`
+- `Deployment/mysql-deployment`
+- `Service/mysql-service`
+- `Deployment/wordpress-deployment`
+- `Service/wordpress-service`
+- `Deployment/kiosk-deployment`
+- `Service/kiosk-service`
+
+### Topologia interna del namespace en mK8s
+
+```mermaid
+flowchart LR
+    subgraph MK8SNS[Namespace de aplicacion en mK8s]
+        MYSQLD[mysql-deployment]
+        MYSQLS[mysql-service:3306]
+        WPD[wordpress-deployment]
+        WPS[wordpress-service:8080]
+        KIOSKD[kiosk-deployment]
+        KIOSKS[kiosk-service:8080]
+    end
+
+    MYSQLD --> MYSQLS
+    WPD --> WPS
+    KIOSKD --> KIOSKS
+    WPD -->|WORDPRESS_DB_HOST=mysql-service| MYSQLS
+    KIOSKD -->|WORDPRESS_HOST=kiosk.domain| WPS
+```
+
+### Rol de cada workload
+
+- `mysql` almacena la base de datos de WordPress
+- `wordpress` sirve la aplicacion principal de BuyTime
+- `kiosk` actua como reverse proxy frontal para la experiencia de kiosco
+
+La relacion funcional es esta:
+
+1. `kiosk` recibe el trafico HTTP para `kiosk.<namespace>.buytime.internal`
+2. `kiosk` reenvia la navegacion hacia WordPress
+3. `wordpress` consulta a MySQL mediante `mysql-service`
+
+#### 6. Capa de exposicion con F5 XC
+
+El workflow crea dos `volterra_http_loadbalancer` dentro del namespace de aplicacion:
+
+- uno para `kiosk.<namespace>.buytime.internal`
+- otro para `recommendations.<namespace>.buytime.internal`
+
+Cada load balancer usa un `origin pool` distinto:
+
+- `kiosk` apunta al servicio Kubernetes `kiosk-service.<namespace>` dentro del sitio
+- `recommendations` apunta a un origen DNS externo definido por variables del modulo
+
+Importante:
+
+- `dns_volterra_managed = false`
+- eso significa que XC no crea automaticamente registros DNS resolvibles para esos dominios
+- por eso la VM kiosk necesita entradas de `hosts` para poder resolverlos localmente
+
+### Topologia de exposicion y trafico
+
+```mermaid
+flowchart LR
+    VM[Windows kiosk VM] -->|HTTP Host: kiosk.namespace.buytime.internal| LBK[XC HTTP LB kiosk]
+    VM -->|HTTP Host: recommendations.namespace.buytime.internal| LBR[XC HTTP LB recommendations]
+    LBK --> OPK[Origin pool kiosk]
+    OPK --> KSVC[kiosk-service namespace:8080]
+    KSVC --> KPOD[kiosk pod]
+    KPOD --> WPSVC[wordpress-service:8080]
+    WPSVC --> WPOD[wordpress pod]
+    WPOD --> MSVC[mysql-service:3306]
+    MSVC --> MPOD[mysql pod]
+    LBR --> OPR[Origin pool recommendations]
+    OPR --> EXT[Servicio externo de recomendaciones]
+```
+
+#### 7. Capa de acceso desde la VM kiosk
+
+La VM Windows kiosk cumple dos funciones:
+
+- punto de entrada operativo para validar la aplicacion por RDP
+- cliente interno del sitio para probar resolucion y trafico HTTP hacia los dominios del laboratorio
+
+El `user_data` de la VM deja preparada la experiencia de prueba:
+
+- opcionalmente fija la contraseña de `Administrator`
+- agrega al archivo `hosts` la IP privada del App Stack site
+- mapea esa IP a:
+  - `kiosk.<namespace>.buytime.internal`
+  - `recommendations.<namespace>.buytime.internal`
+
+Con eso, la VM puede abrir la aplicacion por nombre sin depender de un DNS externo adicional.
+
+## Recorrido extremo a extremo de una solicitud
+
+Cuando un usuario prueba la aplicacion desde la VM kiosk, el camino logico es este:
+
+1. la VM resuelve `kiosk.<namespace>.buytime.internal` usando `hosts`
+2. el trafico llega al HTTP load balancer interno de XC
+3. el load balancer selecciona el `origin pool` del kiosco
+4. el origin pool entrega la solicitud a `kiosk-service`
+5. el pod `kiosk` reenvia la experiencia hacia WordPress
+6. WordPress consulta a MySQL para obtener contenido
+7. la respuesta vuelve por la misma ruta hasta la VM
+
+### Diagrama de secuencia simplificado
+
+```mermaid
+sequenceDiagram
+    participant VM as Windows kiosk VM
+    participant LB as XC HTTP LB kiosk
+    participant KS as kiosk-service
+    participant KP as kiosk pod
+    participant WS as wordpress-service
+    participant WP as wordpress pod
+    participant DB as mysql-service/mysql pod
+
+    VM->>LB: GET / Host=kiosk.namespace.buytime.internal
+    LB->>KS: Route request
+    KS->>KP: Forward to pod
+    KP->>WS: Proxy request
+    WS->>WP: Forward to pod
+    WP->>DB: Query content/data
+    DB-->>WP: Results
+    WP-->>KP: HTML response
+    KP-->>LB: Proxied response
+    LB-->>VM: Page response
+```
+
 ## Job prerequisites
 
 Este job prepara la base del entorno y publica outputs que el segundo job necesita.
