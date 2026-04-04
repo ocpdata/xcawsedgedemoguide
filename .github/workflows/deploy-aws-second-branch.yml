@@ -132,11 +132,13 @@ jobs:
           project_prefix = os.environ["PROJECT_PREFIX_INPUT"].strip()
           output_path = os.environ["GITHUB_OUTPUT"]
 
-          if not namespace.endswith("-a"):
-              print("::error::The primary XC namespace must end with '-a' so the second branch namespace can be derived automatically for this lab.")
+          if namespace.endswith("-a"):
+              second_namespace = f"{namespace[:-2]}-b"
+          elif namespace.endswith("-b"):
+              print("::error::The primary XC namespace already ends with '-b'. Use the original primary branch namespace or rename the base namespace before deriving a second branch.")
               sys.exit(1)
-
-          second_namespace = f"{namespace[:-2]}-b"
+          else:
+              second_namespace = f"{namespace}-b"
 
           network = ipaddress.ip_network(cidr, strict=False)
           if network.version != 4 or network.prefixlen != 16:
@@ -867,7 +869,7 @@ jobs:
             echo
             echo "### Deductions used by this workflow"
             echo
-            echo "- The second branch namespace is derived automatically by replacing the primary namespace suffix '-a' with '-b'."
+            echo "- If the primary namespace ends with '-a', the second branch namespace is derived by replacing that suffix with '-b'. Otherwise the workflow derives the second namespace by appending '-b'."
             echo "- The second branch VPC CIDR is derived automatically by incrementing the second octet of VPC_CIDR_MK8S and keeping a /16 mask."
             echo
             echo "### Notes"
