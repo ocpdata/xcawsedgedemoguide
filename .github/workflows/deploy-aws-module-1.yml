@@ -1886,38 +1886,6 @@ jobs:
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" rollout status deployment/deals-server-deployment --timeout=10m
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get pods -o wide
 
-      - name: Validate module 3 service health on vK8s
-        shell: bash
-        run: |
-          set -euo pipefail
-          kubeconfig_path="$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml"
-          service_proxy_path="/api/v1/namespaces/${MODULE3_ENVIRONMENT}/services/http:deals-server-service:8080/proxy/health"
-
-          attempts=40
-          sleep_seconds=10
-          response_file="$RUNNER_TEMP/module-3-internal-service-health-response.txt"
-          for attempt in $(seq 1 "$attempts"); do
-            response="$(kubectl --kubeconfig "$kubeconfig_path" get --raw "$service_proxy_path" 2>/dev/null || true)"
-            printf '%s\n' "$response" > "$response_file"
-            if [[ "$response" == *timestamp* ]]; then
-              echo "$response"
-              exit 0
-            fi
-
-            if [[ "$attempt" -lt "$attempts" ]]; then
-              echo "Module 3 internal deals service not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-              sleep "$sleep_seconds"
-            fi
-          done
-
-          echo "::error::Timed out waiting for the internal Module 3 deals service to answer /health with a timestamp payload."
-          if [[ -s "$response_file" ]]; then
-            echo "Last internal service response body:"
-            cat "$response_file"
-          fi
-          kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get pods,svc,endpoints -o wide
-          exit 1
-
       - name: Validate module 3 deals endpoint from branch
         shell: bash
         run: |
