@@ -34,6 +34,10 @@ resource "volterra_tcp_loadbalancer" "sync_module" {
   tcp                             = true
   service_policies_from_namespace = true
   no_sni                          = true
+
+  depends_on = [
+    volterra_origin_pool.sync_module,
+  ]
 }
 
 resource "volterra_origin_pool" "sync_module" {

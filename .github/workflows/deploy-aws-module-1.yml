@@ -1470,14 +1470,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/module-2 apply -auto-approve \
-            -var="environment=${MODULE2_ENVIRONMENT}" \
-            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-            -var="kubeconfig_path=$RUNNER_TEMP/module-2-vk8s-kubeconfig.yaml" \
-            -var="create_origin_pool=${TF_VAR_create_origin_pool}" \
-            -var="create_tcp_loadbalancer=${TF_VAR_create_tcp_loadbalancer}" \
-            -var="app_stack_name=${APP_STACK_NAME}"
+          apply_log="$RUNNER_TEMP/module-2-apply.log"
+          attempts=4
+          sleep_seconds=20
+
+          for attempt in $(seq 1 "$attempts"); do
+            if terraform -chdir=aws-mk8s-vk8s/module-2 apply -auto-approve \
+              -var="environment=${MODULE2_ENVIRONMENT}" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              -var="kubeconfig_path=$RUNNER_TEMP/module-2-vk8s-kubeconfig.yaml" \
+              -var="create_origin_pool=${TF_VAR_create_origin_pool}" \
+              -var="create_tcp_loadbalancer=${TF_VAR_create_tcp_loadbalancer}" \
+              -var="app_stack_name=${APP_STACK_NAME}" \
+              >"$apply_log" 2>&1
+            then
+              cat "$apply_log"
+              exit 0
+            fi
+
+            cat "$apply_log"
+            if grep -Fq "Origin pool buytime-online/inventory-server-branches-pool in mirror policy does not exist" "$apply_log" && [[ "$attempt" -lt "$attempts" ]]; then
+              echo "XC origin pool propagation delay during module 2 apply (attempt ${attempt}/${attempts}); retrying in ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+              continue
+            fi
+
+            exit 1
+          done
 
       - name: Validate module 2 workloads
         shell: bash
