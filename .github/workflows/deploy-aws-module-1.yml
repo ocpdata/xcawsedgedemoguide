@@ -140,31 +140,40 @@ jobs:
             exit 1
           fi
 
-      - name: Terraform init namespace probe
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/namespace-probe init
-
       - name: Detect XC namespace state
         shell: bash
         run: |
           set -euo pipefail
-          probe_log="$RUNNER_TEMP/namespace-probe.log"
-          if terraform -chdir=aws-mk8s-vk8s/namespace-probe plan \
-            -input=false \
-            -no-color \
-            >"$probe_log" 2>&1
-          then
-            echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
-          elif grep -Eiq 'status code 404|object not found|not found|does not exist' "$probe_log"
-          then
-            echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
-          else
-            cat "$probe_log"
-            echo "::error::Unable to determine XC namespace state from provider probe."
-            exit 1
-          fi
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          namespace_endpoint="${api_root}/api/web/namespaces/${XC_NAMESPACE}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$RUNNER_TEMP/prerequisites-namespace.json" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$namespace_endpoint" || true)"
+
+          case "$http_code" in
+            200)
+              echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} already exists in XC; prerequisites will reuse it."
+              ;;
+            404)
+              echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} does not exist in XC yet; prerequisites will create it."
+              ;;
+            *)
+              echo "::error::Unable to determine whether namespace ${XC_NAMESPACE} exists in XC (HTTP ${http_code:-curl-error})."
+              if [[ -s "$RUNNER_TEMP/prerequisites-namespace.json" ]]; then
+                cat "$RUNNER_TEMP/prerequisites-namespace.json"
+              fi
+              exit 1
+              ;;
+          esac
 
       - name: Terraform init prerequisites
         shell: bash
