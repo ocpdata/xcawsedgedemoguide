@@ -145,12 +145,13 @@ resource "volterra_aws_vpc_site" "appstack" {
     }
 
     k8s_cluster {
-      name = local.effective_mk8s_cluster_name
+      name = trimspace(var.existing_mk8s_cluster_name) == "" ? volterra_k8s_cluster.mk8s[0].name : local.effective_mk8s_cluster_name
     }
   }
 
   depends_on = [
     volterra_cloud_credentials.aws_cred,
+    volterra_k8s_cluster.mk8s,
     aws_vpc.vpc,
     aws_subnet.subnet_a,
   ]
