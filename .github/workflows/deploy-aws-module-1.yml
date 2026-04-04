@@ -1892,27 +1892,18 @@ jobs:
           set -euo pipefail
           branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
           branch_namespace="${XC_NAMESPACE_OUTPUT}"
-          pod_name='module3-deals-check'
+          wordpress_pod="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get pod -l app=wordpress -o jsonpath='{.items[0].metadata.name}')"
 
-          cleanup() {
-            kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" delete pod "$pod_name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" delete pod "$pod_name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" run "$pod_name" \
-            --image=curlimages/curl:8.7.1 \
-            --restart=Never \
-            --labels=app=module3-deals-check \
-            --command -- sh -c "sleep 3600"
-
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" wait --for=condition=Ready pod/"$pod_name" --timeout=5m
+          if [[ -z "$wordpress_pod" ]]; then
+            echo "::error::Unable to locate the wordpress pod to validate the public deals endpoint from the branch namespace."
+            exit 1
+          fi
 
           attempts=80
           sleep_seconds=15
           response_file="$RUNNER_TEMP/module-3-deals-health-response.txt"
           for attempt in $(seq 1 "$attempts"); do
-            response="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
+            response="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$wordpress_pod" -- \
               sh -c "curl -fsSL --connect-timeout 10 --max-time 20 http://${MODULE3_DEALS_DOMAIN}/health" 2>/dev/null || true)"
             printf '%s\n' "$response" > "$response_file"
             if [[ "$response" == *timestamp* ]]; then
@@ -1931,11 +1922,11 @@ jobs:
             echo "Last response body:"
             cat "$response_file"
           fi
-          echo "DNS probe from branch pod:"
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
+          echo "DNS probe from wordpress pod:"
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$wordpress_pod" -- \
             sh -c "nslookup ${MODULE3_DEALS_DOMAIN} || getent hosts ${MODULE3_DEALS_DOMAIN} || true" 2>/dev/null || true
-          echo "HTTP GET probe from branch pod:"
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
+          echo "HTTP GET probe from wordpress pod:"
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$wordpress_pod" -- \
             sh -c "curl -sv --connect-timeout 10 --max-time 20 http://${MODULE3_DEALS_DOMAIN}/health || true" 2>&1 || true
           exit 1
 
