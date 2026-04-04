@@ -1317,7 +1317,7 @@ jobs:
         run: |
           set -euo pipefail
           branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
-          branch_namespace='${XC_NAMESPACE_OUTPUT}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
           pod_name='module2-sync-check'
 
           cleanup() {
@@ -1342,7 +1342,7 @@ jobs:
         run: |
           set -euo pipefail
           branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
-          branch_namespace='${XC_NAMESPACE_OUTPUT}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
           sync_endpoint="${MODULE2_SYNC_DOMAIN}:${MODULE2_SYNC_PORT}"
           wordpress_pod="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get pod -l app=wordpress -o jsonpath='{.items[0].metadata.name}')"
           php_script="$RUNNER_TEMP/configure-buytime-synchronization.php"
