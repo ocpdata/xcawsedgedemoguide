@@ -3,7 +3,7 @@ resource "tls_private_key" "key" {
 }
 
 resource "volterra_cloud_credentials" "aws_cred" {
-  name      = "${var.environment}"
+  name      = local.effective_site_name
   namespace = "system"
   aws_secret_key {
 	  access_key = var.aws_access_key
@@ -16,7 +16,7 @@ resource "volterra_cloud_credentials" "aws_cred" {
 }
 
 resource "volterra_aws_vpc_site" "site" {
-  name       = "${var.environment}"
+  name       = local.effective_site_name
   namespace  = "system"
   aws_region = var.aws_region
 
@@ -64,10 +64,6 @@ resource "volterra_aws_vpc_site" "site" {
     no_global_network        = true
     no_dc_cluster_group      = true
     sm_connection_public_ip  = true
-
-    performance_enhancement_mode {
-      perf_mode_l7_enhanced = true
-    }
   }
 
   no_worker_nodes = true

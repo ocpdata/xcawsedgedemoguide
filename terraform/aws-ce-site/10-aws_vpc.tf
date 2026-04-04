@@ -1,11 +1,12 @@
 locals {
+  effective_site_name = trimspace(var.site_name) != "" ? trimspace(var.site_name) : trimspace(var.environment)
   vpcs = [
     { 
-      vpc_cidr      = "172.24.0.0/16",
-      subnet_a_cidr = "172.24.10.0/24",
-      subnet_b_cidr = "172.24.20.0/24",
-      subnet_c_cidr = "172.24.30.0/24",
-      name = "${var.environment}-vpc"
+      vpc_cidr      = var.vpc_cidr,
+      subnet_a_cidr = cidrsubnet(var.vpc_cidr, 8, 10),
+      subnet_b_cidr = cidrsubnet(var.vpc_cidr, 8, 20),
+      subnet_c_cidr = cidrsubnet(var.vpc_cidr, 8, 30),
+      name          = "${local.effective_site_name}-vpc"
     },
   ]
 }

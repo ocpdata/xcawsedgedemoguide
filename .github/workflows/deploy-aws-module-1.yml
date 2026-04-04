@@ -12,8 +12,10 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
   VPC_CIDR_MK8S: ${{ vars.VPC_CIDR_MK8S }}
+  VPC_CIDR_CE: ${{ vars.VPC_CIDR_CE }}
   XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
   XC_SERVICE_CREDENTIAL_ROLE: ${{ vars.XC_SERVICE_CREDENTIAL_ROLE }}
+  CE_SITE_NAME: ${{ vars.CE_SITE_NAME }}
 
 jobs:
   prerequisites:
@@ -621,4 +623,117 @@ jobs:
             -var="credential_name=${{ steps.kubeconfig.outputs.credential_name }}" \
             -var="xc_api_url=${{ secrets.XC_API_URL }}" \
             -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
+
+  ce_prerequisites:
+    name: Apply CE prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs:
+      - prerequisites
+      - module_1
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_environment: ${{ vars.CE_SITE_NAME }}
+      TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
+      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_CE }}
+      TF_VAR_create_module2_foundations: "false"
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX CE_SITE_NAME VPC_CIDR_CE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import sys
+
+          cidr = os.environ["VPC_CIDR_CE"]
+          try:
+              ipaddress.ip_network(cidr, strict=False)
+          except Exception as exc:
+              print(f"::error::VPC_CIDR_CE must be a valid CIDR block. Received {cidr!r}: {exc}")
+              sys.exit(1)
+          PY
+
+      - name: Restore CE workspace name
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace_prefix='${{ needs.prerequisites.outputs.workspace_prefix }}'
+          echo "CE_WORKSPACE=${workspace_prefix}-aws-ce-site" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Validate XC API client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -clcerts \
+            -legacy \
+            -nokeys \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-cert.pem"
+          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
+          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
+            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
+            exit 1
+          fi
+
+      - name: Terraform init CE prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ce-prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${CE_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=terraform/aws-ce-site init \
+            -backend-config="$RUNNER_TEMP/ce-prerequisites.backend.hcl"
+
+      - name: Terraform apply CE prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/aws-ce-site apply -auto-approve
+
+      - name: Write CE deployment summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## CE Summary"
+            echo
+            echo "- CE site name: ${CE_SITE_NAME}"
+            echo "- CE VPC CIDR: ${VPC_CIDR_CE}"
+            echo "- CE workspace: ${CE_WORKSPACE}"
+            echo "- Module 2 foundations created: no"
+          } >> "$GITHUB_STEP_SUMMARY"
 

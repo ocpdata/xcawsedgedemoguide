@@ -1,8 +1,8 @@
 # Descripcion del Workflow de Deploy
 
-Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar la base de infraestructura en AWS y F5 Distributed Cloud, y despues publicar el contenido de `module_1` sobre el mK8s del sitio.
+Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar la base de infraestructura en AWS y F5 Distributed Cloud, despues publicar el contenido de `module_1` sobre el mK8s del sitio y finalmente dejar creado el AWS CE site que servira como base para el futuro Module 2.
 
-Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress y deja un resumen operativo al finalizar.
+Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress, crea el CE site en un job separado sin adelantar virtual sites ni vK8s de Module 2, y deja un resumen operativo al finalizar.
 
 ## Nombre del workflow
 
@@ -16,13 +16,16 @@ No recibe parametros de entrada en la invocacion. Toda la configuracion se toma 
 
 ## Que hace en terminos generales
 
-El deploy se divide en dos jobs secuenciales:
+El deploy se divide en tres jobs secuenciales:
 
 1. `prerequisites`
    Crea o reutiliza la base necesaria para el entorno: namespace XC, VPC, subnet, App Stack site, mK8s y VM kiosk.
 
 2. `module_1`
     Espera a que el sitio y el API de mK8s esten listos, genera un kubeconfig temporal, aplica el contenido de `module_1` y valida que el resultado final quede operativo.
+
+3. `ce_prerequisites`
+    Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, pero dejando fuera los virtual sites y el vK8s que pertenecen al Module 2.
 
 ## Variables y secretos relevantes
 
@@ -31,8 +34,10 @@ Variables de repositorio usadas por el workflow:
 - `AWS_REGION`
 - `PROJECT_PREFIX`
 - `VPC_CIDR_MK8S`
+- `VPC_CIDR_CE`
 - `XC_NAMESPACE`
 - `XC_SERVICE_CREDENTIAL_ROLE`
+- `CE_SITE_NAME`
 - `EXISTING_MK8S_CLUSTER_NAME`
 - `PASSWORD_VM_WINDOWS`
 
@@ -53,8 +58,10 @@ flowchart TD
     A[Inicio manual del workflow] --> B[Job prerequisites]
     B --> C[Recolectar outputs: site, mK8s, namespace, IPs y acceso VM]
     C --> D[Job module_1]
-    D --> E[Validaciones funcionales y resumen final]
-    E --> F[Fin del deploy]
+    D --> E[Validaciones funcionales del branch]
+    E --> F[Job ce_prerequisites]
+    F --> G[Resumen final del deploy]
+    G --> H[Fin del deploy]
 ```
 
 ## Topologia de la arquitectura desplegada
@@ -64,8 +71,8 @@ La referencia original de `f5devcentral/xcawsedgedemoguide` presenta una arquite
 Dicho de otra forma:
 
 - la guia original muestra un escenario multisitio y multicloud mas amplio
-- este workflow automatiza el tramo **Pre-Requisites + Module 1**
-- no despliega CE, vK8s, sincronizacion de inventario ni Regional Edge
+- este workflow automatiza el tramo **Pre-Requisites + Module 1**, y ademas crea el AWS CE site como base de red para el siguiente modulo
+- no despliega virtual sites de CE, vK8s, sincronizacion de inventario ni Regional Edge
 - si deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM, los HTTP load balancers internos de `kiosk` y `recommendations`, y WordPress configurado para usar el servicio de recomendaciones
 
 ### Alcance arquitectonico implementado por este workflow
@@ -103,6 +110,7 @@ El resultado final del workflow es esta arquitectura funcional:
 - un origin pool por DNS publico para recomendaciones externas
 - la configuracion del plugin BuyTime dentro de WordPress para apuntar al dominio interno de `recommendations`
 - validaciones automatizadas de readiness, smoke tests y resumen final del despliegue
+- un AWS CE site independiente, con su propia VPC y subnets, listo para ser reutilizado por Module 2
 
 ## Vista de escenario tipo guia, ajustada al workflow real
 
