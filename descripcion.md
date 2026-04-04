@@ -1,8 +1,16 @@
 # Descripcion del Workflow de Deploy
 
-Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar por etapas la base de infraestructura en AWS y F5 Distributed Cloud, despues publicar el contenido de `module_1` sobre el mK8s del sitio, extender el entorno con Module 2 y completar la integracion de Lightning Deals en Module 3.
+El README del repositorio presenta la demo BuyTime como un recorrido por tres capas del escenario: primero la sucursal o Retail Branch sobre App Stack, despues la conectividad segura hacia Customer Edge y finalmente la publicacion del servicio de Lightning Deals. Esa narrativa explica el objetivo funcional de cada modulo, pero su ejecucion original esta pensada como una secuencia manual de pasos en AWS, F5 Distributed Cloud y Kubernetes.
 
-Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente los plugins BuyTime dentro de WordPress, crea el CE site en un job separado sin adelantar foundations de Module 2, espera a que ese CE site quede operativo, reutiliza recursos XC ya existentes cuando corresponde y deja un resumen operativo al finalizar cada etapa.
+Este documento describe como el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) automatiza esa misma progresion. En lugar de seguir el README de forma totalmente manual, el pipeline permite desplegar por etapas la infraestructura base en AWS y F5 Distributed Cloud, publicar los manifiestos de cada modulo sobre el mK8s o vK8s correspondiente y dejar listas las integraciones que el escenario BuyTime necesita para avanzar de una etapa a la siguiente.
+
+Visto desde la logica del README, el workflow hace lo siguiente:
+
+- `module-1`: prepara la base del branch, crea o reutiliza App Stack y mK8s, despliega el kiosk y lo conecta con el servicio de recomendaciones.
+- `module-2`: completa la parte de Customer Edge necesaria para BuyTime Online, despliega el modulo de sincronizacion y habilita la conectividad TCP hacia inventario.
+- `module-3`: reutiliza las foundations anteriores para publicar el servicio de deals en vK8s y exponerlo mediante un HTTP load balancer.
+
+Ademas del aprovisionamiento, la version actual del workflow tambien agrega controles operativos que no estan desarrollados con ese nivel de detalle en el README: valida el estado final de cada etapa, configura automaticamente los plugins BuyTime dentro de WordPress, crea el CE site en un job separado sin adelantar foundations de Module 2, espera a que ese CE site quede operativo, reutiliza recursos XC ya existentes cuando corresponde y deja un resumen operativo al finalizar cada ejecucion.
 
 Las dependencias consumidas por el workflow se estan consolidando bajo `aws-mk8s-vk8s/`. En particular, el stack de CE usado por el job `ce_prerequisites` ya se ejecuta desde `aws-mk8s-vk8s/aws-ce-site`.
 
