@@ -72,6 +72,8 @@ Actualmente estan implementadas las etapas `module-1`, `module-2` y `module-3`. 
 
 Ademas del workflow principal, el repositorio incluye el workflow [.github/workflows/deploy-aws-second-branch.yml](.github/workflows/deploy-aws-second-branch.yml) para desplegar una segunda sucursal Retail Branch sin modificar el workflow staged principal.
 
+Como complemento, tambien existe el workflow [.github/workflows/destroy-aws-second-branch.yml](.github/workflows/destroy-aws-second-branch.yml) para desmontar esa sucursal derivada sin afectar la sucursal primaria ni el workflow staged principal.
+
 Ese workflow asume que [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) ya se ejecuto correctamente para la sucursal primaria y reutiliza los mismos modulos existentes bajo `aws-mk8s-vk8s/`: `namespace-probe`, `prerequisites`, `kubeconfig` y `module-1`.
 
 Su comportamiento principal es este:
@@ -83,6 +85,77 @@ Su comportamiento principal es este:
 - aplica `module-1` sobre esa sucursal y valida workloads, plugin de recommendations y smoke tests del kiosk
 
 Este workflow no introduce variables ni secretos nuevos. Reutiliza las mismas variables y secretos del workflow principal, por lo que los requisitos de configuracion siguen siendo los mismos mientras `XC_NAMESPACE` termine en `-a` y `VPC_CIDR_MK8S` sea una red IPv4 `/16`.
+
+## Workflow adicional para branch fleet vK8s
+
+El repositorio tambien incluye el workflow [.github/workflows/deploy-aws-branch-vk8s.yml](.github/workflows/deploy-aws-branch-vk8s.yml), creado para publicar un `vK8s` adicional que agrupe los `mK8s` de las sucursales Retail Branch sin modificar los workflows previos.
+
+Este workflow usa el modulo `aws-mk8s-vk8s/branch-vk8s` y crea o reutiliza estos objetos en XC:
+
+- namespace `buytime-branches`
+- virtual site `buytime-branch-sites`
+- virtual k8s `buytime-branches-vk8s`
+- API credential temporal para descargar el kubeconfig del nuevo `vK8s`
+
+La logica de agregacion sigue el modo de diseno basado en selector por label comun. En la configuracion actual, el `virtual_site` usa por defecto la expresion:
+
+- `site_group in (buytime-branches)`
+
+Con esto, el `vK8s` no queda amarrado a una lista estatica de sucursales. En cambio, incorpora automaticamente los App Stack sites que tengan esa label dentro de XC.
+
+Ademas del workflow de creacion, el repositorio incluye el workflow [.github/workflows/destroy-aws-branch-vk8s.yml](.github/workflows/destroy-aws-branch-vk8s.yml) para destruir ese branch-fleet `vK8s`. Ese workflow permite tres alcances:
+
+- `vk8s-only`
+- `vk8s-and-virtual-site`
+- `full-stack`
+
+Esto permite borrar solo el `vK8s`, borrar tambien el `virtual_site` o desmontar por completo el namespace `buytime-branches` cuando el laboratorio ya no se necesite.
+
+## Etiquetado manual de sucursales para el branch fleet
+
+En el estado actual del repositorio, la label comun de branch todavia no se agrega automaticamente desde `aws-mk8s-vk8s/prerequisites`. Por esa razon, para validar el nuevo `vK8s` de sucursales se aplico un etiquetado manual sobre los App Stack sites ya existentes en XC.
+
+La label utilizada para agruparlos es esta:
+
+- `site_group = buytime-branches`
+
+Puntos importantes de esta decision:
+
+- la label se aplica sobre el objeto del site en F5 XC, no sobre los nodos ni sobre los objetos de Kubernetes dentro del `mK8s`
+- el selector del `virtual_site` resuelve miembros usando labels de site en XC
+- esto permitio probar el nuevo branch-fleet `vK8s` sin modificar aun el flujo de creacion de sucursales existente
+
+Operativamente, esto deja documentado un siguiente paso natural para el laboratorio: mover esa label al workflow o al modulo `prerequisites` para que futuras sucursales entren automaticamente al `virtual_site` `buytime-branch-sites`.
+
+## Pruebas manuales del branch fleet vK8s
+
+Despues de crear `buytime-branches-vk8s`, se descargo su kubeconfig y se hicieron pruebas operativas directas con `kubectl` para comprobar que no solo existiera el objeto en XC, sino que realmente pudiera aceptar y ejecutar workloads.
+
+Las pruebas realizadas fueron estas:
+
+- validacion del contexto del kubeconfig descargado, confirmando `buytime-branches-vk8s`
+- consulta de namespaces con `kubectl get ns`, confirmando acceso al API del `vK8s`
+- verificacion de que `kubectl get nodes` podia devolver vacio sin implicar fallo, dado que el `vK8s` no expone nodos igual que un cluster Kubernetes convencional
+- intento de crear un namespace nuevo con `kubectl create ns smoke-test`, que devolvio `NotFound` para el endpoint de creacion aunque el recurso `Namespace` aparezca en `api-resources`
+- despliegue de un workload de prueba `nginx-smoke` en el namespace existente `buytime-branches`
+- espera activa hasta que el deployment quedara `Available`
+- inspeccion del pod y de los eventos para confirmar scheduling real sobre una sucursal etiquetada
+
+El resultado relevante de esa prueba fue que el pod `nginx-smoke` paso a estado `Running` y se programo en el nodo `aws-accessq-democasos-b-ip-10-126-10-141.ec2.internal`, perteneciente a la sucursal `aws-accessq-democasos-b`.
+
+Eso confirma tres puntos tecnicos importantes:
+
+- el kubeconfig generado para `buytime-branches-vk8s` es valido
+- el `virtual_site` ya estaba resolviendo al menos una sucursal con la label configurada
+- el nuevo `vK8s` realmente podia ejecutar workloads sobre los `mK8s` de sucursal y no solo existir como objeto de control en XC
+
+En otras palabras, el laboratorio ya quedo probado en este recorrido adicional:
+
+1. crear la segunda sucursal
+2. crear un `vK8s` separado para gestionar sucursales
+3. etiquetar manualmente los App Stack sites de branch en XC
+4. descargar el kubeconfig del branch-fleet `vK8s`
+5. desplegar un workload de prueba y verificar scheduling real sobre una sucursal etiquetada
 
 ## Que hace en terminos generales
 
