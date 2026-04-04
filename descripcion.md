@@ -2,7 +2,7 @@
 
 Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar la base de infraestructura en AWS y F5 Distributed Cloud, despues publicar el contenido de `module_1` sobre el mK8s del sitio y finalmente dejar creado el AWS CE site que servira como base para el futuro Module 2.
 
-Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress, crea el CE site en un job separado sin adelantar virtual sites ni vK8s de Module 2, y deja un resumen operativo al finalizar.
+Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress, crea el CE site en un job separado sin adelantar virtual sites ni vK8s de Module 2, espera a que ese CE site quede operativo y deja un resumen operativo al finalizar.
 
 ## Nombre del workflow
 
@@ -25,7 +25,7 @@ El deploy se divide en tres jobs secuenciales:
     Espera a que el sitio y el API de mK8s esten listos, genera un kubeconfig temporal, aplica el contenido de `module_1` y valida que el resultado final quede operativo.
 
 3. `ce_prerequisites`
-    Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, pero dejando fuera los virtual sites y el vK8s que pertenecen al Module 2.
+    Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, deja fuera los virtual sites y el vK8s que pertenecen al Module 2, y espera a que el site CE alcance un estado operativo en XC.
 
 ## Variables y secretos relevantes
 
@@ -60,8 +60,9 @@ flowchart TD
     C --> D[Job module_1]
     D --> E[Validaciones funcionales del branch]
     E --> F[Job ce_prerequisites]
-    F --> G[Resumen final del deploy]
-    G --> H[Fin del deploy]
+    F --> G[Validacion de readiness del CE]
+    G --> H[Resumen final del deploy]
+    H --> I[Fin del deploy]
 ```
 
 ## Topologia de la arquitectura desplegada
@@ -111,6 +112,7 @@ El resultado final del workflow es esta arquitectura funcional:
 - la configuracion del plugin BuyTime dentro de WordPress para apuntar al dominio interno de `recommendations`
 - validaciones automatizadas de readiness, smoke tests y resumen final del despliegue
 - un AWS CE site independiente, con su propia VPC y subnets, listo para ser reutilizado por Module 2
+- una validacion explicita de que el CE site termine en estado operativo antes de cerrar el workflow
 
 ## Vista de escenario tipo guia, ajustada al workflow real
 
