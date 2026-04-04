@@ -2,6 +2,8 @@
 
 Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar la base de infraestructura en AWS y F5 Distributed Cloud, y despues publicar el contenido de `module_1` sobre el mK8s del sitio.
 
+Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress y deja un resumen operativo al finalizar.
+
 ## Nombre del workflow
 
 `Deploy AWS Prerequisites And Module 1`
@@ -20,7 +22,7 @@ El deploy se divide en dos jobs secuenciales:
    Crea o reutiliza la base necesaria para el entorno: namespace XC, VPC, subnet, App Stack site, mK8s y VM kiosk.
 
 2. `module_1`
-   Espera a que el sitio y el API de mK8s esten listos, genera un kubeconfig temporal y luego aplica el contenido de `module_1`.
+    Espera a que el sitio y el API de mK8s esten listos, genera un kubeconfig temporal, aplica el contenido de `module_1` y valida que el resultado final quede operativo.
 
 ## Variables y secretos relevantes
 
@@ -49,9 +51,10 @@ Secrets usados por el workflow:
 ```mermaid
 flowchart TD
     A[Inicio manual del workflow] --> B[Job prerequisites]
-    B --> C[Recolectar outputs: app_stack_name, mk8s_cluster_name, xc_namespace, workspace_prefix]
+    B --> C[Recolectar outputs: site, mK8s, namespace, IPs y acceso VM]
     C --> D[Job module_1]
-    D --> E[Fin del deploy]
+    D --> E[Validaciones funcionales y resumen final]
+    E --> F[Fin del deploy]
 ```
 
 ## Topologia de la arquitectura desplegada
@@ -63,7 +66,7 @@ Dicho de otra forma:
 - la guia original muestra un escenario multisitio y multicloud mas amplio
 - este workflow automatiza el tramo **Pre-Requisites + Module 1**
 - no despliega CE, vK8s, sincronizacion de inventario ni Regional Edge
-- si deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM y los HTTP load balancers internos de `kiosk` y `recommendations`
+- si deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM, los HTTP load balancers internos de `kiosk` y `recommendations`, y WordPress configurado para usar el servicio de recomendaciones
 
 ### Alcance arquitectonico implementado por este workflow
 
@@ -98,6 +101,8 @@ El resultado final del workflow es esta arquitectura funcional:
 - un HTTP load balancer interno para el servicio de recomendaciones
 - un origin pool Kubernetes para el kiosco
 - un origin pool por DNS publico para recomendaciones externas
+- la configuracion del plugin BuyTime dentro de WordPress para apuntar al dominio interno de `recommendations`
+- validaciones automatizadas de readiness, smoke tests y resumen final del despliegue
 
 ## Vista de escenario tipo guia, ajustada al workflow real
 
@@ -360,6 +365,8 @@ Cuando el operador usa la aplicacion desde la VM Windows, el flujo real es este:
 7. WordPress obtiene datos desde MySQL
 8. la respuesta vuelve al navegador de la VM
 
+Despues del deploy, el workflow tambien escribe en WordPress la configuracion del plugin BuyTime para que el frontend use automaticamente `recommendations.<namespace>.buytime.internal` sin intervencion manual en `wp-admin`.
+
 ```mermaid
 sequenceDiagram
     participant VM as Windows kiosk VM
@@ -396,6 +403,8 @@ El flujo de recomendaciones es distinto porque no termina dentro del mK8s del br
 3. ese load balancer usa un origin pool con `public_name`
 4. el trafico sale hacia el servicio externo de recomendaciones por TLS
 
+En la implementacion actual, WordPress ya queda preconfigurado para consumir este dominio interno de recomendaciones, por lo que la validacion manual en `wp-admin` deja de ser un requisito para cerrar Module 1.
+
 ```mermaid
 sequenceDiagram
     participant VM as Windows kiosk VM o app
@@ -426,6 +435,7 @@ Para evitar confusion, esta es la equivalencia entre la narrativa del repo origi
 - `Create branch namespace`: si, lo crea o reutiliza desde Terraform y Kubernetes
 - `Create HTTP LB for kiosk`: si
 - `HTTP LB recommendations module`: si
+- `Test recommendations module`: si, en gran parte; el workflow configura automaticamente el plugin y valida la salud tecnica, aunque la comprobacion visual final en la UI sigue siendo opcional
 - `Module 2`: no
 - `Module 3`: no
 
@@ -508,7 +518,13 @@ Este job depende de los outputs del job anterior y solo corre cuando `prerequisi
 11. Inicializa Terraform para `aws-mk8s-vk8s/module-1`.
 12. Ejecuta `terraform apply` de `module_1`.
 13. Si aparece el error transitorio `the server is currently unable to handle the request`, reintenta hasta 4 veces.
-14. Revoca la credencial temporal de kubeconfig al final, incluso si hubo error.
+14. Extrae los dominios finales de `kiosk` y `recommendations` desde los outputs de Terraform.
+15. Valida que los deployments y services del namespace esten disponibles y que `mysql`, `wordpress` y `kiosk` completen su rollout.
+16. Configura automaticamente el plugin BuyTime de recomendaciones dentro del pod de WordPress.
+17. Ejecuta un smoke test del kiosk a traves de `port-forward`, incluyendo validacion de `/` y `/wp-admin/`.
+18. Verifica que el origen externo de recomendaciones responda por HTTPS.
+19. Escribe un resumen final del deploy en `GITHUB_STEP_SUMMARY`.
+20. Revoca la credencial temporal de kubeconfig al final, incluso si hubo error.
 
 ### Diagrama del job module_1
 
@@ -523,8 +539,12 @@ flowchart TD
     G --> H[Esperar readiness del API de mK8s]
     H --> I[terraform init module-1]
     I --> J[terraform apply module-1]
-    J --> K[Revocar credencial temporal]
-    K --> L[Fin]
+    J --> K[Recolectar outputs y validar workloads]
+    K --> L[Configurar plugin BuyTime en WordPress]
+    L --> M[Smoke tests y verificacion del origen]
+    M --> N[Resumen final]
+    N --> O[Revocar credencial temporal]
+    O --> P[Fin]
 ```
 
 ## Espera de readiness del App Stack site
@@ -603,12 +623,18 @@ El job `prerequisites` publica estos outputs:
 - `app_stack_name`
 - `mk8s_cluster_name`
 - `xc_namespace`
+- `appstack_private_ip`
+- `kiosk_address`
+- `kiosk_user`
 - `workspace_prefix`
 
 El job `module_1` usa principalmente:
 
 - `app_stack_name`
 - `xc_namespace`
+- `appstack_private_ip`
+- `kiosk_address`
+- `kiosk_user`
 - `workspace_prefix`
 
 ## Consideraciones operativas
@@ -617,6 +643,10 @@ El job `module_1` usa principalmente:
 - Si `EXISTING_MK8S_CLUSTER_NAME` tiene valor, el deploy reutiliza un mK8s existente en lugar de crear uno nuevo.
 - Si `PASSWORD_VM_WINDOWS` tiene valor valido, la VM kiosk fija esa contraseña en el primer arranque.
 - La VM kiosk tambien escribe automaticamente el archivo `hosts` con los nombres internos del laboratorio.
+- El workflow normaliza `RECOMMENDATIONS_ORIGIN_DNS` y `RECOMMENDATIONS_ORIGIN_PORT` para que Terraform y las validaciones usen exactamente el mismo origen efectivo.
+- El workflow configura automaticamente el plugin BuyTime de WordPress con el dominio `recommendations.<namespace>.buytime.internal`.
+- El deploy ya no depende de entrar manualmente a `wp-admin` para enlazar recomendaciones.
+- El job finaliza con validaciones de workloads, smoke tests HTTP y un resumen legible en GitHub Actions.
 - La credencial temporal usada para kubeconfig se revoca al final para no dejar acceso sobrante en XC.
 
 ## Resumen rapido
@@ -625,4 +655,6 @@ El job `module_1` usa principalmente:
 - `module_1` espera readiness del sitio y del mK8s antes de aplicar
 - el kubeconfig del sitio se genera de forma temporal
 - el apply de `module_1` tiene reintentos para errores transitorios del API
+- despues del apply, el workflow valida el estado de Kubernetes, configura automaticamente WordPress para usar `recommendations` y ejecuta smoke tests
+- el resumen final del job deja visibles dominios, IPs y comprobaciones realizadas
 - la credencial temporal se revoca siempre al terminar
