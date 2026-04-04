@@ -13,7 +13,7 @@ locals {
 }
 
 resource "aws_vpc" "vpc" {
-  count = length(local.vpcs)
+  count = var.manage_site_infrastructure ? length(local.vpcs) : 0
 
   cidr_block = local.vpcs[count.index].vpc_cidr
   tags = {

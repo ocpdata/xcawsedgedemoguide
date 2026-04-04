@@ -862,6 +862,7 @@ jobs:
       VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
       TF_VAR_cloud_credential_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_create_cloud_credential: "false"
+      TF_VAR_manage_site_infrastructure: "false"
       TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_CE }}
       TF_VAR_create_module2_foundations: "true"
@@ -1056,6 +1057,16 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/aws-ce-site init \
             -backend-config="$RUNNER_TEMP/module-2-ce.backend.hcl"
 
+      - name: Import existing module 2 namespace when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if terraform -chdir=aws-mk8s-vk8s/aws-ce-site import 'volterra_namespace.buytime[0]' "${MODULE2_ENVIRONMENT}"; then
+            echo "Imported existing namespace ${MODULE2_ENVIRONMENT} into CE workspace state."
+          else
+            echo "Namespace ${MODULE2_ENVIRONMENT} is not tracked yet; Terraform will try to create it during apply."
+          fi
+
       - name: Terraform apply CE foundations for module 2
         shell: bash
         run: |
@@ -1063,6 +1074,7 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
             -var="cloud_credential_name=${CE_SITE_NAME}" \
             -var="create_cloud_credential=false" \
+            -var="manage_site_infrastructure=false" \
             -var="environment=${MODULE2_ENVIRONMENT}" \
             -var="site_name=${CE_SITE_NAME}" \
             -var="vpc_cidr=${VPC_CIDR_CE}" \

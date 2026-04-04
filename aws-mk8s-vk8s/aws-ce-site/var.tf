@@ -22,6 +22,12 @@ variable "create_cloud_credential" {
   description = "Whether Terraform should create the XC cloud credential or reuse an existing one."
 }
 
+variable "manage_site_infrastructure" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should manage the CE AWS VPC, subnets, site object, and related site resources."
+}
+
 variable "xc_api_url" {
   type    = string
   default = "https://your_tenant_name.console.ves.volterra.io/api"
@@ -52,6 +58,12 @@ variable "create_module2_foundations" {
   type        = bool
   default     = true
   description = "Whether to create the online namespace, virtual sites, vk8s, and kubeconfig used by Module 2."
+}
+
+variable "create_namespace" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the Module 2 namespace or reuse an existing one."
 }
 
 variable "aws_region" {

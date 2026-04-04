@@ -3,7 +3,7 @@ resource "tls_private_key" "key" {
 }
 
 resource "volterra_cloud_credentials" "aws_cred" {
-  count     = var.create_cloud_credential ? 1 : 0
+  count     = var.manage_site_infrastructure && var.create_cloud_credential ? 1 : 0
   name      = local.effective_cloud_credential_name
   namespace = "system"
   aws_secret_key {
@@ -17,6 +17,7 @@ resource "volterra_cloud_credentials" "aws_cred" {
 }
 
 resource "volterra_aws_vpc_site" "site" {
+  count      = var.manage_site_infrastructure ? 1 : 0
   name       = local.effective_site_name
   namespace  = "system"
   aws_region = var.aws_region
@@ -78,14 +79,16 @@ resource "volterra_aws_vpc_site" "site" {
 }
 
 resource "volterra_cloud_site_labels" "labels" {
-  name             = volterra_aws_vpc_site.site.name
+  count            = var.manage_site_infrastructure ? 1 : 0
+  name             = volterra_aws_vpc_site.site[0].name
   site_type        = "aws_vpc_site"
   labels           = {}
   ignore_on_delete = true
 }
 
 resource "volterra_tf_params_action" "action_apply" {
-	site_name        = volterra_aws_vpc_site.site.name
+	count            = var.manage_site_infrastructure ? 1 : 0
+	site_name        = volterra_aws_vpc_site.site[0].name
 	site_kind        = "aws_vpc_site"
 	action           = "apply"
 	wait_for_action  = true
@@ -100,10 +103,10 @@ resource "volterra_tf_params_action" "action_apply" {
 }
 
 output "xc_private_key" {
-  value     = tls_private_key.key.private_key_pem
+  value     = var.manage_site_infrastructure ? tls_private_key.key.private_key_pem : ""
   sensitive = true
 }
 
 output "xc_public_key" {
-  value = tls_private_key.key.public_key_openssh
+  value = var.manage_site_infrastructure ? tls_private_key.key.public_key_openssh : ""
 }

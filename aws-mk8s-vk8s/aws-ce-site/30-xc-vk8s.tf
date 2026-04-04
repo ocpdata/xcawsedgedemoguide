@@ -2,7 +2,7 @@ resource "volterra_virtual_site" "buytime_re" {
   count = var.create_module2_foundations ? 1 : 0
 
   name      = "buytime-re-sites"
-  namespace = volterra_namespace.buytime[0].name
+  namespace = local.module2_namespace_name
 
   site_selector {
     expressions = ["ves.io/region in (ves-io-seattle, ves-io-singapore, ves-io-stockholm)"]
@@ -19,7 +19,7 @@ resource "volterra_virtual_site" "buytime_ce" {
   count = var.create_module2_foundations ? 1 : 0
 
   name      = "buytime-ce-sites"
-  namespace = volterra_namespace.buytime[0].name
+  namespace = local.module2_namespace_name
 
   site_selector {
     expressions = ["location in (buytime-ce-site)"]
@@ -36,7 +36,7 @@ resource "volterra_virtual_k8s" "buytime" {
   count = var.create_module2_foundations ? 1 : 0
 
   name      = "buytime-online-vk8s"
-  namespace = volterra_namespace.buytime[0].name
+  namespace = local.module2_namespace_name
   vsite_refs {
     name = volterra_virtual_site.buytime_ce[0].name
   }
@@ -52,7 +52,7 @@ resource "volterra_api_credential" "buytime" {
   created_at = timestamp()
   name                  = "buytime-online-kubeconfig"
   api_credential_type   = "KUBE_CONFIG"
-  virtual_k8s_namespace = volterra_namespace.buytime[0].name
+  virtual_k8s_namespace = local.module2_namespace_name
   virtual_k8s_name      = volterra_virtual_k8s.buytime[0].name
 }
 
