@@ -476,6 +476,53 @@ jobs:
 
           kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get pods -o wide
 
+      - name: Configure BuyTime recommendations plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace='${{ needs.prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          recommendations_domain='${{ steps.module_outputs.outputs.recommendations_domain }}'
+          wordpress_pod="$(kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get pod -l app=wordpress -o jsonpath='{.items[0].metadata.name}')"
+          php_script="$RUNNER_TEMP/configure-buytime-recommendations.php"
+
+          if [[ -z "$wordpress_pod" ]]; then
+            echo "::error::Unable to locate the wordpress pod to configure the BuyTime plugin."
+            exit 1
+          fi
+
+          cat > "$php_script" <<PHP
+          <?php
+          require '/var/www/html/wp-load.php';
+
+          \$domain = '${recommendations_domain}';
+          if (\$domain === '') {
+              fwrite(STDERR, "Missing recommendations domain.\n");
+              exit(1);
+          }
+
+          \$options = get_option('recommendations_server');
+          if (!is_array(\$options)) {
+              \$options = array();
+          }
+
+          \$options['recommendation_server_url'] = \$domain;
+          update_option('recommendations_server', \$options, true);
+
+          \$current = get_option('recommendations_server');
+          if (!is_array(\$current) || (\$current['recommendation_server_url'] ?? '') !== \$domain) {
+              fwrite(STDERR, "Failed to persist the recommendations server URL.\n");
+              exit(1);
+          }
+
+          fwrite(STDOUT, "Configured recommendations_server_url=\$domain\n");
+          PHP
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- php -v >/dev/null
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec -i "$wordpress_pod" -- sh -c 'cat > /tmp/configure-buytime-recommendations.php' < "$php_script"
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- php /tmp/configure-buytime-recommendations.php
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- rm -f /tmp/configure-buytime-recommendations.php || true
+
       - name: Smoke test kiosk application
         shell: bash
         run: |
@@ -555,6 +602,7 @@ jobs:
             echo "### Notes"
             echo
             echo "- The workflow validates deployment readiness for mysql, wordpress, and kiosk."
+            echo "- The BuyTime recommendations plugin is configured automatically inside WordPress."
             echo "- The kiosk app is smoke-tested through the in-cluster service using the expected Host header."
             echo "- The recommendations origin endpoint is checked for HTTP reachability."
             echo "- The kubeconfig used by the workflow is temporary and is revoked at the end of the job."
