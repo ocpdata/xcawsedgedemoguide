@@ -1,10 +1,16 @@
+locals {
+  module2_tcp_loadbalancer_name = "inventory-server-branches"
+  module2_origin_pool_name      = "inventory-server-branches-pool"
+}
+
 resource "volterra_tcp_loadbalancer" "sync_module" {
-  name      = "inventory-server-branches"
+  count     = var.create_tcp_loadbalancer ? 1 : 0
+  name      = local.module2_tcp_loadbalancer_name
   namespace = var.environment
 
   origin_pools_weights {
     pool {
-      name = volterra_origin_pool.sync_module.name
+      name = local.module2_origin_pool_name
     }
   }
 
@@ -31,7 +37,8 @@ resource "volterra_tcp_loadbalancer" "sync_module" {
 }
 
 resource "volterra_origin_pool" "sync_module" {
-  name      = "inventory-server-branches-pool"
+  count     = var.create_origin_pool ? 1 : 0
+  name      = local.module2_origin_pool_name
   namespace = var.environment
 
   origin_servers {

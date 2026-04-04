@@ -29,3 +29,15 @@ variable "app_stack_name" {
   default     = "aws-branch-a"
   description = "App Stack Name"
 }
+
+variable "create_origin_pool" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the Module 2 origin pool or reuse an existing one."
+}
+
+variable "create_tcp_loadbalancer" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the Module 2 TCP load balancer or reuse an existing one."
+}
