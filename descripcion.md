@@ -1,16 +1,16 @@
 # Descripcion del Workflow de Deploy
 
-El README del repositorio presenta la demo BuyTime como un recorrido por tres capas del escenario: primero la sucursal o Retail Branch sobre App Stack, despues la conectividad segura hacia Customer Edge y finalmente la publicacion del servicio de Lightning Deals. Esa narrativa explica el objetivo funcional de cada modulo, pero su ejecucion original esta pensada como una secuencia manual de pasos en AWS, F5 Distributed Cloud y Kubernetes.
+Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) como una automatizacion por etapas de la plataforma BuyTime sobre AWS y F5 Distributed Cloud. El objetivo del pipeline es construir una topologia distribuida en tres pasos: primero la sucursal o Retail Branch sobre App Stack, despues la base de Customer Edge para cargas compartidas y finalmente la publicacion del servicio de Lightning Deals.
 
-Este documento describe como el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) automatiza esa misma progresion. En lugar de seguir el README de forma totalmente manual, el pipeline permite desplegar por etapas la infraestructura base en AWS y F5 Distributed Cloud, publicar los manifiestos de cada modulo sobre el mK8s o vK8s correspondiente y dejar listas las integraciones que el escenario BuyTime necesita para avanzar de una etapa a la siguiente.
+La secuencia esta pensada para que cada etapa agregue infraestructura utilizable sin reprovisionar innecesariamente lo ya creado. `module-1` levanta el branch con su App Stack site, su mK8s, la VM kiosk y la aplicacion de sucursal. `module-2` extiende esa base con el CE site, los virtual sites, el vK8s y el modulo de sincronizacion. `module-3` reutiliza esos foundations para desplegar el servicio de deals y exponerlo por HTTP.
 
-Visto desde la logica del README, el workflow hace lo siguiente:
+Visto desde la topologia que crea, el workflow hace lo siguiente:
 
 - `module-1`: prepara la base del branch, crea o reutiliza App Stack y mK8s, despliega el kiosk y lo conecta con el servicio de recomendaciones.
 - `module-2`: completa la parte de Customer Edge necesaria para BuyTime Online, despliega el modulo de sincronizacion y habilita la conectividad TCP hacia inventario.
 - `module-3`: reutiliza las foundations anteriores para publicar el servicio de deals en vK8s y exponerlo mediante un HTTP load balancer.
 
-Ademas del aprovisionamiento, la version actual del workflow tambien agrega controles operativos que no estan desarrollados con ese nivel de detalle en el README: valida el estado final de cada etapa, configura automaticamente los plugins BuyTime dentro de WordPress, crea el CE site en un job separado sin adelantar foundations de Module 2, espera a que ese CE site quede operativo, reutiliza recursos XC ya existentes cuando corresponde y deja un resumen operativo al finalizar cada ejecucion.
+Ademas del aprovisionamiento, la version actual del workflow agrega controles operativos para cerrar cada etapa con un entorno funcional: valida el estado final de los recursos, configura automaticamente los plugins BuyTime dentro de WordPress, crea el CE site en un job separado sin adelantar foundations de Module 2, espera a que ese CE site quede operativo, reutiliza recursos XC ya existentes cuando corresponde y deja un resumen operativo al finalizar cada ejecucion.
 
 Las dependencias consumidas por el workflow se estan consolidando bajo `aws-mk8s-vk8s/`. En particular, el stack de CE usado por el job `ce_prerequisites` ya se ejecuta desde `aws-mk8s-vk8s/aws-ce-site`.
 
@@ -43,9 +43,9 @@ Cuando se selecciona `module-1`, el deploy se divide en tres jobs secuenciales:
 3. `ce_prerequisites`
     Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, deja fuera los virtual sites y el vK8s que pertenecen al Module 2, y espera a que el site CE alcance un estado operativo en XC.
 
-Cuando se selecciona `module-2`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, amplia el stack de CE en `aws-mk8s-vk8s/aws-ce-site` solo para los foundations de Module 2, reutiliza la cloud credential ya existente del CE en lugar de recrearla, evita reprovisionar la VPC y el site CE y consulta XC para decidir si el namespace `buytime-online`, los virtual sites requeridos y el vK8s deben crearse o reutilizarse. Para el kubeconfig del vK8s usa un API credential con nombre corto y unico por ejecucion para evitar colisiones y respetar el limite de longitud de XC. Antes de aplicar `aws-mk8s-vk8s/module-2`, tambien consulta XC para decidir si el origin pool y el TCP load balancer del modulo de sincronizacion deben crearse o reutilizarse. Despues espera a que el API del vK8s quede operativo y aplica `aws-mk8s-vk8s/module-2` para desplegar el modulo de sincronizacion y su TCP load balancer. Ademas, genera un kubeconfig temporal del branch, ejecuta una validacion TCP real desde el entorno del sitio hacia `inventory-server.branches.buytime.internal:3000` y valida el plugin de sincronizacion de WordPress usando la misma opcion y la misma comprobacion `ping`/`pong` que usa la interfaz del README.
+Cuando se selecciona `module-2`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, amplia el stack de CE en `aws-mk8s-vk8s/aws-ce-site` solo para los foundations de Module 2, reutiliza la cloud credential ya existente del CE en lugar de recrearla, evita reprovisionar la VPC y el site CE y consulta XC para decidir si el namespace `buytime-online`, los virtual sites requeridos y el vK8s deben crearse o reutilizarse. Para el kubeconfig del vK8s usa un API credential con nombre corto y unico por ejecucion para evitar colisiones y respetar el limite de longitud de XC. Antes de aplicar `aws-mk8s-vk8s/module-2`, tambien consulta XC para decidir si el origin pool y el TCP load balancer del modulo de sincronizacion deben crearse o reutilizarse. Despues espera a que el API del vK8s quede operativo y aplica `aws-mk8s-vk8s/module-2` para desplegar el modulo de sincronizacion y su TCP load balancer. Ademas, genera un kubeconfig temporal del branch, ejecuta una validacion TCP real desde el entorno del sitio hacia `inventory-server.branches.buytime.internal:3000` y valida el plugin de sincronizacion de WordPress usando la misma opcion y la misma comprobacion `ping`/`pong` que utiliza la interfaz de administracion.
 
-Cuando se selecciona `module-3`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, valida que los foundations de Module 2 ya existan en XC, genera un kubeconfig temporal del vK8s reutilizando el stack `aws-mk8s-vk8s/aws-ce-site` sin reprovisionar namespace, virtual sites ni vK8s, y luego aplica `aws-mk8s-vk8s/module-3` para desplegar el servicio de deals sobre el vK8s y crear su HTTP load balancer publico. Antes del apply consulta XC para decidir si el origin pool y el HTTP load balancer de Module 3 deben crearse o reutilizarse. Finalmente valida el rollout del servicio, comprueba desde el branch que `http://deals.<user_domain>/health` responda con un payload valido y actualiza el plugin de Lightning Deals de WordPress usando la misma opcion `deals_server[deals_server_url]` y la misma comprobacion `wp_remote_get('/health')` que usa la interfaz del README.
+Cuando se selecciona `module-3`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, valida que los foundations de Module 2 ya existan en XC, genera un kubeconfig temporal del vK8s reutilizando el stack `aws-mk8s-vk8s/aws-ce-site` sin reprovisionar namespace, virtual sites ni vK8s, y luego aplica `aws-mk8s-vk8s/module-3` para desplegar el servicio de deals sobre el vK8s y crear su HTTP load balancer publico. Antes del apply consulta XC para decidir si el origin pool y el HTTP load balancer de Module 3 deben crearse o reutilizarse. Finalmente valida el rollout del servicio, comprueba desde el branch que `http://deals.<user_domain>/health` responda con un payload valido y actualiza el plugin de Lightning Deals de WordPress usando la misma opcion `deals_server[deals_server_url]` y la misma comprobacion `wp_remote_get('/health')` que usa la interfaz de administracion.
 
 ## Variables y secretos relevantes
 
@@ -99,103 +99,149 @@ flowchart TD
 
 ## Topologia de la arquitectura desplegada
 
-La referencia original de `f5devcentral/xcawsedgedemoguide` presenta una arquitectura completa de BuyTime distribuida entre Retail Branch, Customer Edge y Regional Edge. Este workflow implementa solo una porcion de ese escenario: la parte de **Retail Branch sobre App Stack en AWS**, junto con la integracion hacia un servicio externo de recomendaciones.
+La infraestructura creada por este workflow no es un unico bloque monolitico. Se construye por capas y cada etapa agrega recursos concretos sobre los ya existentes. El resultado final combina tres dominios de infraestructura: un branch en AWS con App Stack y mK8s, un CE site dedicado para cargas compartidas y un plano de exposicion en XC para publicar servicios internos y externos.
 
-Dicho de otra forma:
+La topologia completa queda organizada asi:
 
-- la guia original muestra un escenario multisitio y multicloud mas amplio
-- este workflow automatiza el tramo **Pre-Requisites + Module 1 + Module 2 + Module 3** dentro de un mismo archivo staged
-- despliega los foundations de CE y vK8s necesarios para BuyTime Online, el modulo de sincronizacion interno y el servicio publico de Lightning Deals
-- deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM, los servicios internos y externos necesarios, y WordPress configurado para usar recomendaciones, sincronizacion y Lightning Deals
+- una capa de branch con VPC, subnet, App Stack site, mK8s, VM Windows y workloads de kiosk
+- una capa de Customer Edge con VPC dedicada, CE site, virtual sites y vK8s para cargas online compartidas
+- una capa de exposicion y service insertion en XC con origin pools, HTTP load balancers y TCP load balancers
+- una capa de consumo donde WordPress y la VM del branch usan dominios internos para recomendaciones, sincronizacion y deals
 
 ### Alcance arquitectonico implementado por este workflow
 
 ```mermaid
 flowchart LR
-    subgraph FULL[Escenario de referencia BuyTime]
-        RB[Retail Branch]
-        CE[Customer Edge]
-        RE[Regional Edge]
+    subgraph FULL[Topologia staged desplegada]
+        RB[Retail Branch sobre App Stack]
+        CE[Customer Edge para BuyTime Online]
+        RE[Exposicion de deals por HTTP LB]
     end
 
     RB:::implemented
-    CE:::notimplemented
-    RE:::notimplemented
+    CE:::implemented
+    RE:::implemented
 
     classDef implemented fill:#d9f2d9,stroke:#2d6a4f,stroke-width:2px,color:#111;
-    classDef notimplemented fill:#f3f4f6,stroke:#9ca3af,stroke-width:1px,color:#444;
+
 ```
 
 ### Resumen de componentes realmente desplegados
 
 El resultado final del workflow es esta arquitectura funcional:
 
-- una VPC en AWS para el branch
-- una subnet principal donde viven el App Stack site y la VM kiosk
-- un `aws_vpc_site` de F5 XC sobre esa VPC
-- un mK8s administrado por XC, creado o reutilizado
-- una VM Windows kiosk con acceso RDP por IP publica
-- un namespace de aplicacion en mK8s
-- tres workloads Kubernetes para la experiencia de retail kiosk
-- un HTTP load balancer interno para el frontend kiosk
-- un HTTP load balancer interno para el servicio de recomendaciones
-- un origin pool Kubernetes para el kiosco
-- un origin pool por DNS publico para recomendaciones externas
-- la configuracion del plugin BuyTime dentro de WordPress para apuntar al dominio interno de `recommendations`
-- validaciones automatizadas de readiness, smoke tests y resumen final del despliegue
-- un AWS CE site independiente, con su propia VPC y subnets, listo para ser reutilizado por Module 2
-- una validacion explicita de que el CE site termine en estado operativo antes de cerrar el workflow
+- una VPC de branch en AWS con una subnet principal para el nodo de App Stack y la VM Windows del kiosco
+- un `aws_vpc_site` de F5 XC sobre esa VPC, asociado a un mK8s administrado por XC
+- una VM Windows con IP publica para acceso RDP y pruebas funcionales desde la propia red del branch
+- un namespace de aplicacion en mK8s con `mysql`, `wordpress` y `kiosk` como workloads separados
+- un HTTP load balancer interno para el frontend del kiosco y otro HTTP load balancer interno para el servicio de recomendaciones
+- un origin pool Kubernetes para `kiosk-service` y un origin pool por DNS publico para el backend externo de recomendaciones
+- una VPC independiente para CE con subnets separadas para outside, inside y workload, mas su CE site operativo en XC
+- un namespace online, virtual sites y un vK8s para hospedar los componentes compartidos de BuyTime Online
+- un despliegue del modulo de sincronizacion sobre vK8s junto con su TCP load balancer para el acceso a inventario
+- un despliegue del servicio de deals sobre vK8s junto con su HTTP load balancer publico para `deals.<user_domain>`
+- la configuracion automatica de WordPress para consumir `recommendations`, `inventory-server` y `deals` sin ajustes manuales posteriores
+- validaciones automatizadas de readiness, smoke tests de red y resumen operativo al final de cada etapa
 
-## Vista de escenario tipo guia, ajustada al workflow real
+### Distribucion de recursos por etapa
 
-Esta vista intenta parecerse mas a la narrativa del repo de referencia, pero mostrando solo lo que este workflow materializa.
+La evolucion de la infraestructura queda asi:
+
+- `module-1`: branch VPC, subnet, App Stack site, mK8s, VM kiosk, namespace de branch, workloads kiosk y load balancers HTTP internos.
+- `module-2`: CE VPC, CE site, namespace `buytime-online`, virtual sites, vK8s, modulo de sincronizacion y TCP load balancer.
+- `module-3`: servicio `deals` sobre el vK8s ya existente, origin pool asociado y HTTP load balancer publico.
+
+## Vista consolidada de la infraestructura
+
+Esta vista resume los bloques que quedan activos cuando las tres etapas terminan correctamente.
 
 ```mermaid
 flowchart LR
     Shopper[Operador o usuario en sucursal] --> KioskVM[Windows kiosk VM]
 
-    subgraph AWS[AWS Retail Branch VPC]
-        subgraph BranchSubnet[Subnet del branch]
-            AppStackNode[App Stack site node]
+    subgraph AWSBRANCH[AWS VPC branch]
+        subgraph BranchSubnet[aws_subnet.subnet_a]
+            AppStackNode[volterra_aws_vpc_site.appstack node]
             KioskVM
         end
     end
 
+    subgraph AWSCE[AWS VPC CE]
+        CEOutside[aws_subnet.subnet_a outside]
+        CEInside[aws_subnet.subnet_b inside]
+        CEWorkload[aws_subnet.subnet_c workload]
+        CESite[volterra_aws_vpc_site.site nodes]
+    end
+
     subgraph XC[F5 Distributed Cloud]
         SystemNS[system namespace]
-        AppNS[Application namespace XC_NAMESPACE]
-        MK8S[mK8s buytime.internal]
-        KioskLB[HTTP LB kiosk.namespace.buytime.internal]
-        RecLB[HTTP LB recommendations.namespace.buytime.internal]
-        KioskPool[Origin pool -> kiosk-service.namespace]
-        RecPool[Origin pool -> recommendations origin DNS]
+        AppNS[app namespace XC_NAMESPACE]
+        OnlineNS[buytime-online namespace]
+        MK8S[volterra_k8s_cluster.mk8s]
+        VSiteCE[volterra_virtual_site.buytime_ce]
+        VSiteRE[volterra_virtual_site.buytime_re]
+        VK8S[volterra_virtual_k8s.buytime]
+        KioskLB[volterra_http_loadbalancer.kiosk]
+        RecLB[volterra_http_loadbalancer.recommendations]
+        SyncLB[volterra_tcp_loadbalancer.sync_module]
+        DealsLB[volterra_http_loadbalancer.deals]
+        KioskPool[volterra_origin_pool.kiosk]
+        RecPool[volterra_origin_pool.recommendations]
+        SyncPool[inventory-server-branches-pool]
+        DealsPool[buytime-online-deals-pool]
     end
 
     subgraph MKSCOPE[mK8s workloads en el branch]
-        MySQL[(MySQL pod)]
-        WordPress[WordPress pod]
-        KioskProxy[Kiosk reverse proxy pod]
+        MySQL[(mysql-deployment)]
+        WordPress[(wordpress-deployment)]
+        KioskProxy[(kiosk-deployment)]
+    end
+
+    subgraph VKSCOPE[vK8s workloads]
+        InventorySvc[inventory-server-service:3000]
+        DealsSvc[deals-server-service:8080]
     end
 
     ExternalRec[Servicio externo de recomendaciones]
+    CentralInventory[Backend de inventario]
 
     SystemNS --> MK8S
+    SystemNS --> AppStackNode
+    SystemNS --> CESite
+    AppNS --> KioskPool
+    AppNS --> RecPool
+    OnlineNS --> SyncPool
+    OnlineNS --> DealsPool
     AppStackNode --> MK8S
+    VSiteCE --> VK8S
+    VSiteRE --> VK8S
     AppNS --> KioskLB
     AppNS --> RecLB
+    OnlineNS --> SyncLB
+    OnlineNS --> DealsLB
     KioskLB --> KioskPool
     RecLB --> RecPool
+    SyncLB --> SyncPool
+    DealsLB --> DealsPool
     KioskPool --> KioskProxy
     KioskProxy --> WordPress
     WordPress --> MySQL
     RecPool --> ExternalRec
+    SyncPool --> InventorySvc
+    DealsPool --> DealsSvc
+    InventorySvc --> CentralInventory
+    CEOutside --> CESite
+    CEInside --> CESite
+    CEWorkload --> CESite
     KioskVM --> KioskLB
     KioskVM --> RecLB
+    KioskVM --> SyncLB
+    KioskVM --> DealsLB
 ```
 
 ## Planos de la arquitectura
 
-Para que la topologia sea mas clara, conviene separarla en cuatro planos: automatizacion, control, infraestructura y datos o trafico.
+Para que la topologia sea mas clara, conviene separarla en cinco vistas: automatizacion, control, infraestructura AWS, workloads en mK8s y workloads en vK8s.
 
 ### 1. Plano de automatizacion
 
@@ -211,6 +257,12 @@ flowchart LR
     User[Operador] --> GHA[GitHub Actions workflow_dispatch]
     GHA --> P[Job prerequisites]
     P --> TFC1[Terraform Cloud prerequisites workspace]
+    GHA --> CP[Job ce_prerequisites]
+    CP --> TFCCE[Terraform Cloud ce-site workspace]
+    GHA --> M2[Job module_2]
+    M2 --> TFCM2[Terraform Cloud module-2 workspace]
+    GHA --> M3[Job module_3]
+    M3 --> TFCM3[Terraform Cloud module-3 workspace]
     P --> AWS[AWS API]
     P --> XC[F5 XC API]
     P --> OUT[Outputs del job]
@@ -218,60 +270,83 @@ flowchart LR
     M1 --> TFC2[Terraform Cloud module-1 workspace]
     M1 --> XC
     M1 --> AWS
+    CP --> AWS
+    CP --> XC
+    M2 --> XC
+    M2 --> AWS
+    M3 --> XC
 ```
 
 ### 2. Plano de control
 
-Este plano muestra como F5 XC controla la infraestructura del branch.
+Este plano muestra como F5 XC controla tanto el branch como la capa online.
 
-- el namespace `system` de XC contiene el `aws_vpc_site` y el mK8s
-- el namespace de aplicacion contiene los objetos de exposicion de `module_1`
-- el sitio App Stack se enlaza al mK8s asociado
-- el workflow genera una credencial temporal para obtener kubeconfig del sitio
+- el namespace `system` contiene el App Stack site, el CE site y el mK8s
+- el namespace de aplicacion del branch contiene los objetos de exposicion de `module-1`
+- el namespace `buytime-online` contiene virtual sites, vK8s, origin pools y load balancers de `module-2` y `module-3`
+- el workflow genera credenciales temporales para obtener kubeconfig de mK8s y vK8s sin exponer credenciales persistentes del cluster
 
 ```mermaid
 flowchart TD
     XCAPI[F5 XC control plane API]
     XCAPI --> SYS[system namespace]
     XCAPI --> APPNS[application namespace XC_NAMESPACE]
+    XCAPI --> ONNS[namespace buytime-online]
 
-    SYS --> Site[volterra_aws_vpc_site]
-    SYS --> MK8S[volterra_k8s_cluster o cluster reutilizado]
-    Site --> MK8S
+    SYS --> AppStack[volterra_aws_vpc_site.appstack]
+    SYS --> CESite[volterra_aws_vpc_site.site]
+    SYS --> MK8S[volterra_k8s_cluster.mk8s]
+    AppStack --> MK8S
 
-    APPNS --> KLB[volterra_http_loadbalancer kiosk]
-    APPNS --> RLB[volterra_http_loadbalancer recommendations]
-    APPNS --> KOP[volterra_origin_pool kiosk]
-    APPNS --> ROP[volterra_origin_pool recommendations]
+    APPNS --> KLB[volterra_http_loadbalancer.kiosk]
+    APPNS --> RLB[volterra_http_loadbalancer.recommendations]
+    APPNS --> KOP[volterra_origin_pool.kiosk]
+    APPNS --> ROP[volterra_origin_pool.recommendations]
 
     KLB --> KOP
     RLB --> ROP
+
+    ONNS --> VSCE[volterra_virtual_site.buytime_ce]
+    ONNS --> VSRE[volterra_virtual_site.buytime_re]
+    ONNS --> VK8S[volterra_virtual_k8s.buytime]
+    ONNS --> TLB[volterra_tcp_loadbalancer.sync_module]
+    ONNS --> SOP[volterra_origin_pool.sync_module]
+    ONNS --> DLB[volterra_http_loadbalancer.deals]
+    ONNS --> DOP[volterra_origin_pool.deals]
+
+    VSCE --> VK8S
+    VSRE --> VK8S
+    TLB --> SOP
+    DLB --> DOP
 ```
 
 ### 3. Plano de infraestructura en AWS
 
-Este workflow materializa un branch sencillo en una sola VPC y una sola subnet.
+Este workflow materializa dos dominios de red separados en AWS: uno para el branch y otro para CE.
 
 Recursos principales:
 
-- `aws_vpc`
-- `aws_subnet`
+- `aws_vpc.vpc` del branch
+- `aws_subnet.subnet_a` del branch
 - `aws_instance.kiosk`
 - `aws_security_group.kiosk_sg`
 - `aws_key_pair.kiosk_key_pair`
-- nodo del App Stack site desplegado por XC dentro de la misma subnet
+- `aws_vpc.vpc` del CE
+- `aws_subnet.subnet_a`, `aws_subnet.subnet_b` y `aws_subnet.subnet_c` del CE
+- nodos del App Stack site y del CE site desplegados por XC
 
 Características importantes:
 
 - la VM kiosk tiene IP publica para RDP
 - el App Stack site usa una sola interfaz y queda sin `internet VIP`
 - tanto la VM como el nodo del sitio comparten la red privada del branch
+- el CE site usa topologia de dos interfaces con redes separadas para outside, inside y workload
 - el workflow consulta la interfaz de red del App Stack para descubrir su IP privada
 
 ```mermaid
 flowchart TB
-    subgraph VPC[AWS VPC CIDR VPC_CIDR_MK8S]
-        subgraph Subnet[Subnet principal del branch]
+    subgraph BRANCH[AWS branch VPC_CIDR_MK8S]
+        subgraph BranchSubnet[aws_subnet.subnet_a]
             AppNode[App Stack site node]
             VM[Windows kiosk VM]
         end
@@ -279,10 +354,20 @@ flowchart TB
         KP[EC2 key pair]
     end
 
+    subgraph CE[AWS CE VPC_CIDR_CE]
+        CEA[aws_subnet.subnet_a outside]
+        CEB[aws_subnet.subnet_b inside]
+        CEC[aws_subnet.subnet_c workload]
+        CENode[CE site nodes]
+    end
+
     SG --> VM
     KP --> VM
     VM -. RDP 3389 publico .-> Internet[Internet para administracion]
     VM -->|trafico privado| AppNode
+    CEA --> CENode
+    CEB --> CENode
+    CEC --> CENode
 ```
 
 ### 4. Plano de workloads en mK8s
@@ -315,6 +400,37 @@ flowchart LR
 - `mysql-service`: servicio ClusterIP para la base de datos
 - `wordpress-service`: servicio ClusterIP para la app WordPress
 - `kiosk-service`: servicio ClusterIP consumido por el HTTP LB interno de XC
+
+### 5. Plano de workloads en vK8s
+
+Sobre el vK8s `buytime`, el workflow despliega dos servicios de apoyo para la experiencia online y la sincronizacion.
+
+```mermaid
+flowchart LR
+    subgraph VNS[Namespace buytime-online sobre vK8s]
+        INVDEP[inventory-server-deployment]
+        INVSVC[inventory-server-service:3000]
+        DEALDEP[deals-server-deployment]
+        DEALSVC[deals-server-service:8080]
+    end
+
+    subgraph VSITES[Anotaciones de virtual site]
+        CEVS[ves.io/virtual-sites: buytime-ce-sites]
+        REVS[ves.io/virtual-sites: buytime-re-sites]
+    end
+
+    INVDEP --> INVSVC
+    DEALDEP --> DEALSVC
+    CEVS --> INVSVC
+    REVS --> DEALSVC
+```
+
+#### Funcion de los componentes online
+
+- `inventory-server-deployment`: backend TCP para sincronizacion de inventario consumido desde el branch
+- `inventory-server-service`: servicio ClusterIP anunciado en `buytime-ce-sites` y publicado por `volterra_tcp_loadbalancer.sync_module`
+- `deals-server-deployment`: backend HTTP para promociones de Lightning Deals
+- `deals-server-service`: servicio ClusterIP anunciado en `buytime-re-sites` y publicado por `volterra_http_loadbalancer.deals`
 
 ## Topologia de exposicion de servicios
 
@@ -471,35 +587,27 @@ sequenceDiagram
     EXT-->>VM: Respuesta del servicio de recomendaciones
 ```
 
-## Mapa de correspondencia con la guia de referencia
+## Mapa de componentes por etapa
 
-Para evitar confusion, esta es la equivalencia entre la narrativa del repo original y lo que este workflow automatiza realmente.
+Para evitar confusiones, esta es la relacion entre cada etapa y los componentes que deja operativos.
 
-- `Create mK8s resource`: si, lo crea o reutiliza
-- `Create app stack`: si, lo crea
-- `Get mK8s Kubeconfig`: si, lo genera de forma temporal durante el workflow
-- `Create AWS CE site`: no, este workflow no lo implementa
-- `Deploy kiosk`: si, mediante `module_1`
-- `Create branch namespace`: si, lo crea o reutiliza desde Terraform y Kubernetes
-- `Create HTTP LB for kiosk`: si
-- `HTTP LB recommendations module`: si
-- `Test recommendations module`: si, en gran parte; el workflow configura automaticamente el plugin y valida la salud tecnica, aunque la comprobacion visual final en la UI sigue siendo opcional
-- `Module 2`: no
-- `Module 3`: no
+- `prerequisites`: crea o reutiliza namespace XC, VPC del branch, subnet, App Stack site, mK8s y VM kiosk
+- `module_1`: despliega `mysql`, `wordpress` y `kiosk`, crea los dos HTTP load balancers internos y configura el plugin de recomendaciones
+- `ce_prerequisites`: crea la VPC del CE, sus subnets y el CE site operativo
+- `module_2`: crea o reutiliza namespace online, virtual sites, vK8s, sync module y TCP load balancer
+- `module_3`: despliega el servicio de deals, crea o reutiliza sus objetos de exposicion y actualiza la configuracion de Lightning Deals en WordPress
 
 ## Conclusiones de topologia
 
-La arquitectura que implementa este workflow es la de una **Retail Branch App Stack deployment** con estas propiedades clave:
+La arquitectura que implementa este workflow es la de una plataforma BuyTime staged con estas propiedades clave:
 
-- una sola sucursal en AWS
-- un solo App Stack site
-- un solo mK8s asociado al branch
-- una VM de prueba dentro de la misma red del branch
-- una aplicacion 3-tier en mK8s para el kiosco
-- exposicion interna por HTTP LB de XC
-- extension funcional hacia un servicio externo de recomendaciones
+- una sucursal en AWS con App Stack, mK8s, VM Windows y aplicacion 3-tier para el kiosco
+- un dominio CE separado para workloads compartidos y sincronizacion de inventario
+- un vK8s reutilizable para servicios online complementarios
+- exposicion interna y publica mediante objetos de networking de XC segun el tipo de servicio
+- integracion automatica de WordPress con recomendaciones, sincronizacion y Lightning Deals
 
-Eso la convierte en una automatizacion fiel al tramo inicial del escenario BuyTime, pero todavia acotada al branch y no al resto del diseño multicloud completo de la guia original.
+Eso deja una topologia distribuida y operativa por etapas: el branch puede funcionar por si solo en `module-1`, el plano CE y el vK8s quedan listos en `module-2`, y la experiencia online se completa en `module-3` sin rehacer la base ya creada.
 
 ## Job prerequisites
 
