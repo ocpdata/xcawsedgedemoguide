@@ -6,7 +6,7 @@ locals {
   vpc_name                    = "${local.base_name}-vpc"
   subnet_a_cidr               = cidrsubnet(var.vpc_cidr, 8, 10)
   app_stack_location          = "${local.base_name}-app-stack"
-  effective_namespace         = var.create_xc_namespace ? volterra_namespace.app_namespace[0].name : data.volterra_namespace.app_namespace[0].name
+  effective_namespace         = trimspace(var.xc_namespace)
   effective_mk8s_cluster_name = trimspace(var.existing_mk8s_cluster_name) != "" ? trimspace(var.existing_mk8s_cluster_name) : local.k8s_cluster_name
   kiosk_domain                = format("kiosk.%s.buytime.internal", local.effective_namespace)
   recommendations_domain      = format("recommendations.%s.buytime.internal", local.effective_namespace)
