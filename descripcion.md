@@ -277,6 +277,83 @@ flowchart LR
     KioskVM --> DealsLB
 ```
 
+## Vista de direccionamiento IP, subnets y CIDR
+
+La siguiente vista aterriza la topologia en terminos de direccionamiento. Para hacerla concreta, toma como referencia los valores tipicos del laboratorio y explicita las variables del workflow que gobiernan cada bloque:
+
+- branch principal: `VPC_CIDR_MK8S = 10.125.0.0/16`
+- subnet del branch: `cidrsubnet(VPC_CIDR_MK8S, 8, 10)` → `10.125.10.0/24`
+- CE: `VPC_CIDR_CE = 172.24.0.0/16`
+- subnet CE outside: `cidrsubnet(VPC_CIDR_CE, 8, 10)` → `172.24.10.0/24`
+- subnet CE inside: `cidrsubnet(VPC_CIDR_CE, 8, 20)` → `172.24.20.0/24`
+- subnet CE workload: `cidrsubnet(VPC_CIDR_CE, 8, 30)` → `172.24.30.0/24`
+
+Las IP exactas del `App Stack site` y de la `Windows kiosk VM` no son fijas: el workflow las obtiene como outputs (`appstack_private_ip` y `kiosk_address`) despues del aprovisionamiento. El diagrama siguiente esta pensado como referencia operativa para troubleshooting y para correlacionar variables, subnets y endpoints.
+
+```mermaid
+flowchart LR
+    Internet[Internet]
+
+    subgraph BRANCH[AWS Retail Branch VPC\nVPC_CIDR_MK8S = 10.125.0.0/16]
+        subgraph BRANCHSUBNET[Branch subnet\ncidrsubnet VPC_CIDR_MK8S,8,10 = 10.125.10.0/24]
+            AppNode[App Stack site node\nprivate IP = appstack_private_ip]
+            KioskVM[Windows kiosk VM\nprivate IP en 10.125.10.0/24\npublic IP = kiosk_address]
+        end
+    end
+
+    subgraph CE[AWS Customer Edge VPC\nVPC_CIDR_CE = 172.24.0.0/16]
+        CEOutside[Outside subnet\ncidrsubnet VPC_CIDR_CE,8,10 = 172.24.10.0/24]
+        CEInside[Inside subnet\ncidrsubnet VPC_CIDR_CE,8,20 = 172.24.20.0/24]
+        CEWorkload[Workload subnet\ncidrsubnet VPC_CIDR_CE,8,30 = 172.24.30.0/24]
+        CESite[CE site nodes\ninterfaces distribuidas entre las tres subnets]
+    end
+
+    subgraph XC[F5 Distributed Cloud]
+        KioskHost[kiosk.XC_NAMESPACE.buytime.internal\nHTTP LB interno]
+        RecHost[recommendations.XC_NAMESPACE.buytime.internal\nHTTP LB interno]
+        SyncHost[inventory-server.branches.buytime.internal:3000]
+        DealsHost[deals.USER_DOMAIN:80\nHTTP LB publico]
+    end
+
+    subgraph MK8S[mK8s en Retail Branch]
+        MySQLSvc[mysql-service:3306]
+        WordPressSvc[wordpress-service:8080]
+        KioskSvc[kiosk-service:8080]
+    end
+
+    subgraph VK8S[vK8s buytime-online]
+        InventorySvc[inventory-server-service:3000]
+        DealsSvc[deals-server-service:8080]
+    end
+
+    ExternalRec[Recommendation Service externo\nRECOMMENDATIONS_ORIGIN_DNS + TLS]
+
+    Internet -->|RDP 3389| KioskVM
+    KioskVM -->|archivo hosts => appstack_private_ip| AppNode
+    AppNode --> KioskHost
+    AppNode --> RecHost
+    KioskHost --> KioskSvc
+    KioskSvc --> WordPressSvc
+    WordPressSvc --> MySQLSvc
+    RecHost --> ExternalRec
+
+    CEOutside --> CESite
+    CEInside --> CESite
+    CEWorkload --> CESite
+    CESite --> SyncHost
+    CESite --> DealsHost
+    SyncHost --> InventorySvc
+    DealsHost --> DealsSvc
+```
+
+Si tambien se despliega la segunda sucursal con el workflow `deploy-aws-second-branch.yml`, el laboratorio deriva automaticamente este segundo bloque de direccionamiento:
+
+- segundo namespace: `branch-b` si el principal es `branch-a`
+- segunda VPC: `10.126.0.0/16`
+- segunda subnet del branch: `10.126.10.0/24`
+- segundo dominio interno kiosk: `kiosk.branch-b.buytime.internal`
+- segundo dominio interno recommendations: `recommendations.branch-b.buytime.internal`
+
 ## Planos de la arquitectura
 
 Para que la topologia sea mas clara, conviene separarla en cinco vistas: automatizacion, control, infraestructura AWS, workloads en mK8s y workloads en vK8s.
