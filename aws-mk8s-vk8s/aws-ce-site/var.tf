@@ -78,6 +78,24 @@ variable "create_ce_virtual_site" {
   description = "Whether Terraform should create the Customer Edge virtual site or reuse an existing one."
 }
 
+variable "create_virtual_k8s" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the virtual k8s object or reuse an existing one."
+}
+
+variable "virtual_k8s_name" {
+  type        = string
+  default     = "buytime-online-vk8s"
+  description = "Name of the Module 2 virtual k8s object."
+}
+
+variable "api_credential_name" {
+  type        = string
+  default     = "buytime-online-kubeconfig"
+  description = "Name of the API credential used to generate the vK8s kubeconfig."
+}
+
 variable "aws_region" {
   type    = string
   default = "us-east-2"

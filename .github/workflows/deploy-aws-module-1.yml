@@ -866,6 +866,9 @@ jobs:
       TF_VAR_create_namespace: "true"
       TF_VAR_create_re_virtual_site: "true"
       TF_VAR_create_ce_virtual_site: "true"
+      TF_VAR_create_virtual_k8s: "true"
+      TF_VAR_virtual_k8s_name: buytime-online-vk8s
+      TF_VAR_api_credential_name: buytime-online-kubeconfig-${{ github.run_id }}-${{ github.run_attempt }}
       TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_CE }}
       TF_VAR_create_module2_foundations: "true"
@@ -1139,6 +1142,42 @@ jobs:
             esac
           done
 
+      - name: Detect existing module 2 virtual k8s
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          virtual_k8s_name="${TF_VAR_virtual_k8s_name}"
+          endpoint="${api_root}/api/config/namespaces/${MODULE2_ENVIRONMENT}/virtual_k8ss/${virtual_k8s_name}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$RUNNER_TEMP/module-2-virtual-k8s.json" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$endpoint" || true)"
+
+          case "$http_code" in
+            200)
+              echo "TF_VAR_create_virtual_k8s=false" >> "$GITHUB_ENV"
+              echo "Virtual k8s ${virtual_k8s_name} already exists in XC; module-2 will reuse it."
+              ;;
+            404)
+              echo "TF_VAR_create_virtual_k8s=true" >> "$GITHUB_ENV"
+              echo "Virtual k8s ${virtual_k8s_name} does not exist in XC yet; module-2 will create it."
+              ;;
+            *)
+              echo "::error::Unable to determine whether virtual k8s ${virtual_k8s_name} exists in XC (HTTP ${http_code:-curl-error})."
+              if [[ -s "$RUNNER_TEMP/module-2-virtual-k8s.json" ]]; then
+                cat "$RUNNER_TEMP/module-2-virtual-k8s.json"
+              fi
+              exit 1
+              ;;
+          esac
+
       - name: Terraform apply CE foundations for module 2
         shell: bash
         run: |
@@ -1149,7 +1188,10 @@ jobs:
             -var="create_namespace=${TF_VAR_create_namespace}" \
             -var="create_re_virtual_site=${TF_VAR_create_re_virtual_site}" \
             -var="create_ce_virtual_site=${TF_VAR_create_ce_virtual_site}" \
+            -var="create_virtual_k8s=${TF_VAR_create_virtual_k8s}" \
             -var="manage_site_infrastructure=false" \
+            -var="virtual_k8s_name=${TF_VAR_virtual_k8s_name}" \
+            -var="api_credential_name=${TF_VAR_api_credential_name}" \
             -var="environment=${MODULE2_ENVIRONMENT}" \
             -var="site_name=${CE_SITE_NAME}" \
             -var="vpc_cidr=${VPC_CIDR_CE}" \

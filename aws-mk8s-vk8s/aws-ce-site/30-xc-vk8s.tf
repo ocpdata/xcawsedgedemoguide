@@ -32,9 +32,9 @@ resource "volterra_virtual_site" "buytime_ce" {
 }
 
 resource "volterra_virtual_k8s" "buytime" {
-  count = var.create_module2_foundations ? 1 : 0
+  count = var.create_module2_foundations && var.create_virtual_k8s ? 1 : 0
 
-  name      = "buytime-online-vk8s"
+  name      = var.virtual_k8s_name
   namespace = local.module2_namespace_ref
   vsite_refs {
     name = local.buytime_ce_virtual_site_name
@@ -49,10 +49,10 @@ resource "volterra_api_credential" "buytime" {
   count = var.create_module2_foundations ? 1 : 0
 
   created_at = timestamp()
-  name                  = "buytime-online-kubeconfig"
+  name                  = var.api_credential_name
   api_credential_type   = "KUBE_CONFIG"
   virtual_k8s_namespace = local.module2_namespace_ref
-  virtual_k8s_name      = volterra_virtual_k8s.buytime[0].name
+  virtual_k8s_name      = var.virtual_k8s_name
 }
 
 resource "local_file" "kubeconfig" {
