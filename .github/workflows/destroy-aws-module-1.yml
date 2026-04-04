@@ -150,23 +150,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
-            -var="cloud_credential_name=${CE_SITE_NAME}" \
-            -var="create_cloud_credential=false" \
-            -var="create_namespace=false" \
-            -var="create_re_virtual_site=false" \
-            -var="create_ce_virtual_site=false" \
-            -var="create_virtual_k8s=false" \
-            -var="manage_site_infrastructure=false" \
-            -var="virtual_k8s_name=buytime-online-vk8s" \
-            -var="api_credential_name=${TF_VAR_api_credential_name}" \
-            -var="environment=${MODULE3_ENVIRONMENT}" \
-            -var="site_name=${CE_SITE_NAME}" \
-            -var="vpc_cidr=${VPC_CIDR_CE}" \
-            -var="create_module2_foundations=true" \
-            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-            -var="kubeconfig_path=$RUNNER_TEMP/module-3-destroy-vk8s-kubeconfig.yaml"
+          apply_log="$RUNNER_TEMP/module-3-destroy-kubeconfig.log"
+          for attempt in $(seq 1 20); do
+            if terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
+              -var="cloud_credential_name=${CE_SITE_NAME}" \
+              -var="create_cloud_credential=false" \
+              -var="create_namespace=false" \
+              -var="create_re_virtual_site=false" \
+              -var="create_ce_virtual_site=false" \
+              -var="create_virtual_k8s=false" \
+              -var="manage_site_infrastructure=false" \
+              -var="virtual_k8s_name=buytime-online-vk8s" \
+              -var="api_credential_name=${TF_VAR_api_credential_name}" \
+              -var="environment=${MODULE3_ENVIRONMENT}" \
+              -var="site_name=${CE_SITE_NAME}" \
+              -var="vpc_cidr=${VPC_CIDR_CE}" \
+              -var="create_module2_foundations=true" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              -var="kubeconfig_path=$RUNNER_TEMP/module-3-destroy-vk8s-kubeconfig.yaml" \
+              >"$apply_log" 2>&1
+            then
+              cat "$apply_log"
+              exit 0
+            fi
+
+            if grep -Eqi "not found|failed to find site|site.*not.*ready|timed out|timeout|connection refused|unavailable|EOF" "$apply_log" && [[ "$attempt" -lt 20 ]]; then
+              echo "Module 3 destroy kubeconfig not available yet (attempt ${attempt}/20); retrying in 15s"
+              sleep 15
+              continue
+            fi
+
+            cat "$apply_log"
+            exit 1
+          done
 
       - name: Terraform init module 3
         shell: bash
@@ -369,23 +386,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
-            -var="cloud_credential_name=${CE_SITE_NAME}" \
-            -var="create_cloud_credential=false" \
-            -var="create_namespace=false" \
-            -var="create_re_virtual_site=false" \
-            -var="create_ce_virtual_site=false" \
-            -var="create_virtual_k8s=false" \
-            -var="manage_site_infrastructure=false" \
-            -var="virtual_k8s_name=buytime-online-vk8s" \
-            -var="api_credential_name=${TF_VAR_api_credential_name}" \
-            -var="environment=${MODULE2_ENVIRONMENT}" \
-            -var="site_name=${CE_SITE_NAME}" \
-            -var="vpc_cidr=${VPC_CIDR_CE}" \
-            -var="create_module2_foundations=true" \
-            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-            -var="kubeconfig_path=$RUNNER_TEMP/module-2-destroy-vk8s-kubeconfig.yaml"
+          apply_log="$RUNNER_TEMP/module-2-destroy-kubeconfig.log"
+          for attempt in $(seq 1 20); do
+            if terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
+              -var="cloud_credential_name=${CE_SITE_NAME}" \
+              -var="create_cloud_credential=false" \
+              -var="create_namespace=false" \
+              -var="create_re_virtual_site=false" \
+              -var="create_ce_virtual_site=false" \
+              -var="create_virtual_k8s=false" \
+              -var="manage_site_infrastructure=false" \
+              -var="virtual_k8s_name=buytime-online-vk8s" \
+              -var="api_credential_name=${TF_VAR_api_credential_name}" \
+              -var="environment=${MODULE2_ENVIRONMENT}" \
+              -var="site_name=${CE_SITE_NAME}" \
+              -var="vpc_cidr=${VPC_CIDR_CE}" \
+              -var="create_module2_foundations=true" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              -var="kubeconfig_path=$RUNNER_TEMP/module-2-destroy-vk8s-kubeconfig.yaml" \
+              >"$apply_log" 2>&1
+            then
+              cat "$apply_log"
+              exit 0
+            fi
+
+            if grep -Eqi "not found|failed to find site|site.*not.*ready|timed out|timeout|connection refused|unavailable|EOF" "$apply_log" && [[ "$attempt" -lt 20 ]]; then
+              echo "Module 2 destroy kubeconfig not available yet (attempt ${attempt}/20); retrying in 15s"
+              sleep 15
+              continue
+            fi
+
+            cat "$apply_log"
+            exit 1
+          done
 
       - name: Terraform init module 2
         shell: bash
@@ -745,24 +779,34 @@ jobs:
             tried_roles="${tried_roles:-} $role"
 
             apply_log="$RUNNER_TEMP/kubeconfig-apply-${role}.log"
-            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
-              -var="project_prefix=${PROJECT_PREFIX}" \
-              -var="site_name=${APP_STACK_NAME}" \
-              -var="xc_namespace=${XC_NAMESPACE}" \
-              -var="service_credential_role=${role}" \
-              -var="credential_name=${credential_name}" \
-              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-              >"$apply_log" 2>&1
-            then
-              selected_role="$role"
-              break
-            fi
+            for attempt in $(seq 1 20); do
+              if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+                -var="project_prefix=${PROJECT_PREFIX}" \
+                -var="site_name=${APP_STACK_NAME}" \
+                -var="xc_namespace=${XC_NAMESPACE}" \
+                -var="service_credential_role=${role}" \
+                -var="credential_name=${credential_name}" \
+                -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+                -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+                >"$apply_log" 2>&1
+              then
+                selected_role="$role"
+                break 2
+              fi
 
-            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              if grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+                break
+              fi
+
+              if grep -Eqi "not found|failed to find site|site.*not.*ready|timed out|timeout|connection refused|unavailable|EOF" "$apply_log" && [[ "$attempt" -lt 20 ]]; then
+                echo "Destroy kubeconfig not available yet for role ${role} (attempt ${attempt}/20); retrying in 15s"
+                sleep 15
+                continue
+              fi
+
               cat "$apply_log"
               exit 1
-            fi
+            done
           done
 
           if [[ -z "$selected_role" ]]; then
