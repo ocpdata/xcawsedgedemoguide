@@ -1,5 +1,6 @@
 locals {
   effective_site_name = trimspace(var.site_name) != "" ? trimspace(var.site_name) : trimspace(var.environment)
+  effective_cloud_credential_name = trimspace(var.cloud_credential_name) != "" ? trimspace(var.cloud_credential_name) : local.effective_site_name
   vpcs = [
     { 
       vpc_cidr      = var.vpc_cidr,

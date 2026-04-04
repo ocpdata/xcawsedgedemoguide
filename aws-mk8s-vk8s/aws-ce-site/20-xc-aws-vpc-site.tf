@@ -3,7 +3,8 @@ resource "tls_private_key" "key" {
 }
 
 resource "volterra_cloud_credentials" "aws_cred" {
-  name      = local.effective_site_name
+  count     = var.create_cloud_credential ? 1 : 0
+  name      = local.effective_cloud_credential_name
   namespace = "system"
   aws_secret_key {
 	  access_key = var.aws_access_key
@@ -25,8 +26,8 @@ resource "volterra_aws_vpc_site" "site" {
   }
 
   aws_cred {
-    name      = volterra_cloud_credentials.aws_cred.name
-    namespace = volterra_cloud_credentials.aws_cred.namespace
+    name      = local.effective_cloud_credential_name
+    namespace = "system"
   }
 
   vpc {

@@ -10,6 +10,18 @@ variable "site_name" {
   description = "Optional explicit CE site name. When empty, environment is used."
 }
 
+variable "cloud_credential_name" {
+  type        = string
+  default     = ""
+  description = "Optional existing XC cloud credential name. When empty, the CE site name is used."
+}
+
+variable "create_cloud_credential" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the XC cloud credential or reuse an existing one."
+}
+
 variable "xc_api_url" {
   type    = string
   default = "https://your_tenant_name.console.ves.volterra.io/api"
