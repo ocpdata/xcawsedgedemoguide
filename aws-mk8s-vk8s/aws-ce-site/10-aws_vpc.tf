@@ -1,6 +1,7 @@
 locals {
   effective_site_name = trimspace(var.site_name) != "" ? trimspace(var.site_name) : trimspace(var.environment)
   effective_cloud_credential_name = trimspace(var.cloud_credential_name) != "" ? trimspace(var.cloud_credential_name) : local.effective_site_name
+  site_infrastructure_count = var.manage_site_infrastructure ? length(local.vpcs) : 0
   vpcs = [
     { 
       vpc_cidr      = var.vpc_cidr,
@@ -13,7 +14,7 @@ locals {
 }
 
 resource "aws_vpc" "vpc" {
-  count = var.manage_site_infrastructure ? length(local.vpcs) : 0
+  count = local.site_infrastructure_count
 
   cidr_block = local.vpcs[count.index].vpc_cidr
   tags = {
@@ -23,7 +24,7 @@ resource "aws_vpc" "vpc" {
 }
 
 resource "aws_subnet" "subnet_a" {
-  count             = length(aws_vpc.vpc)
+  count             = local.site_infrastructure_count
   vpc_id            = aws_vpc.vpc[count.index].id
   cidr_block        = local.vpcs[count.index].subnet_a_cidr
   availability_zone = "${var.aws_region}a"
@@ -34,7 +35,7 @@ resource "aws_subnet" "subnet_a" {
 }
 
 resource "aws_subnet" "subnet_b" {
-  count = length(aws_vpc.vpc)
+  count = local.site_infrastructure_count
 
   vpc_id            = aws_vpc.vpc[count.index].id
   cidr_block        = local.vpcs[count.index].subnet_b_cidr
@@ -46,7 +47,7 @@ resource "aws_subnet" "subnet_b" {
 }
 
 resource "aws_subnet" "subnet_c" {
-  count             = length(aws_vpc.vpc)
+  count             = local.site_infrastructure_count
   vpc_id            = aws_vpc.vpc[count.index].id
   cidr_block        = local.vpcs[count.index].subnet_c_cidr
   availability_zone = "${var.aws_region}a"
