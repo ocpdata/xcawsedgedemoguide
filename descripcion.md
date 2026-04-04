@@ -108,24 +108,6 @@ La topologia completa queda organizada asi:
 - una capa de exposicion y service insertion en XC con origin pools, HTTP load balancers y TCP load balancers
 - una capa de consumo donde WordPress y la VM del branch usan dominios internos para recomendaciones, sincronizacion y deals
 
-### Alcance arquitectonico implementado por este workflow
-
-```mermaid
-flowchart LR
-    subgraph FULL[Topologia staged desplegada]
-        RB[Retail Branch sobre App Stack]
-        CE[Customer Edge para BuyTime Online]
-        RE[Exposicion de deals por HTTP LB]
-    end
-
-    RB:::implemented
-    CE:::implemented
-    RE:::implemented
-
-    classDef implemented fill:#d9f2d9,stroke:#2d6a4f,stroke-width:2px,color:#111;
-
-```
-
 ### Resumen de componentes realmente desplegados
 
 El resultado final del workflow es esta arquitectura funcional:
@@ -150,6 +132,8 @@ La evolucion de la infraestructura queda asi:
 - `module-1`: branch VPC, subnet, App Stack site, mK8s, VM kiosk, namespace de branch, workloads kiosk y load balancers HTTP internos.
 - `module-2`: CE VPC, CE site, namespace `buytime-online`, virtual sites, vK8s, modulo de sincronizacion y TCP load balancer.
 - `module-3`: servicio `deals` sobre el vK8s ya existente, origin pool asociado y HTTP load balancer publico.
+
+Con esa secuencia, cada etapa agrega una capa funcional nueva sin rehacer la base anterior: primero el branch, despues el plano CE y finalmente la publicacion de deals.
 
 ## Vista consolidada de la infraestructura
 
@@ -586,28 +570,6 @@ sequenceDiagram
     Pool->>EXT: TLS hacia DNS externo configurado
     EXT-->>VM: Respuesta del servicio de recomendaciones
 ```
-
-## Mapa de componentes por etapa
-
-Para evitar confusiones, esta es la relacion entre cada etapa y los componentes que deja operativos.
-
-- `prerequisites`: crea o reutiliza namespace XC, VPC del branch, subnet, App Stack site, mK8s y VM kiosk
-- `module_1`: despliega `mysql`, `wordpress` y `kiosk`, crea los dos HTTP load balancers internos y configura el plugin de recomendaciones
-- `ce_prerequisites`: crea la VPC del CE, sus subnets y el CE site operativo
-- `module_2`: crea o reutiliza namespace online, virtual sites, vK8s, sync module y TCP load balancer
-- `module_3`: despliega el servicio de deals, crea o reutiliza sus objetos de exposicion y actualiza la configuracion de Lightning Deals en WordPress
-
-## Conclusiones de topologia
-
-La arquitectura que implementa este workflow es la de una plataforma BuyTime staged con estas propiedades clave:
-
-- una sucursal en AWS con App Stack, mK8s, VM Windows y aplicacion 3-tier para el kiosco
-- un dominio CE separado para workloads compartidos y sincronizacion de inventario
-- un vK8s reutilizable para servicios online complementarios
-- exposicion interna y publica mediante objetos de networking de XC segun el tipo de servicio
-- integracion automatica de WordPress con recomendaciones, sincronizacion y Lightning Deals
-
-Eso deja una topologia distribuida y operativa por etapas: el branch puede funcionar por si solo en `module-1`, el plano CE y el vK8s quedan listos en `module-2`, y la experiencia online se completa en `module-3` sin rehacer la base ya creada.
 
 ## Job prerequisites
 
