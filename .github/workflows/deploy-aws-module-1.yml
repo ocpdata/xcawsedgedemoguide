@@ -1901,7 +1901,7 @@ jobs:
 
           kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" delete pod "$pod_name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
           kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" run "$pod_name" \
-            --image=busybox:1.36 \
+            --image=curlimages/curl:8.7.1 \
             --restart=Never \
             --labels=app=module3-deals-check \
             --command -- sh -c "sleep 3600"
@@ -1910,9 +1910,11 @@ jobs:
 
           attempts=40
           sleep_seconds=15
+          response_file="$RUNNER_TEMP/module-3-deals-health-response.txt"
           for attempt in $(seq 1 "$attempts"); do
             response="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
-              sh -c "wget -qO- http://${MODULE3_DEALS_DOMAIN}/health" 2>/dev/null || true)"
+              sh -c "curl -fsSL --connect-timeout 10 --max-time 20 http://${MODULE3_DEALS_DOMAIN}/health" 2>/dev/null || true)"
+            printf '%s\n' "$response" > "$response_file"
             if [[ "$response" == *timestamp* ]]; then
               echo "$response"
               exit 0
@@ -1925,6 +1927,16 @@ jobs:
           done
 
           echo "::error::Timed out waiting for the Module 3 deals endpoint to answer /health with a timestamp payload."
+          if [[ -s "$response_file" ]]; then
+            echo "Last response body:"
+            cat "$response_file"
+          fi
+          echo "DNS probe from branch pod:"
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
+            sh -c "nslookup ${MODULE3_DEALS_DOMAIN} || getent hosts ${MODULE3_DEALS_DOMAIN} || true" 2>/dev/null || true
+          echo "HTTP headers probe from branch pod:"
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
+            sh -c "curl -sSIL --connect-timeout 10 --max-time 20 http://${MODULE3_DEALS_DOMAIN}/health || true" 2>/dev/null || true
           exit 1
 
       - name: Validate module 3 lightning deals plugin
