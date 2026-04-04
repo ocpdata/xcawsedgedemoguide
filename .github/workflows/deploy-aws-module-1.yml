@@ -333,7 +333,7 @@ jobs:
           fi
           exit 1
 
-      - name: Wait for XC App Stack site readiness
+      - name: Check XC App Stack site status
         shell: bash
         run: |
           set -euo pipefail
@@ -341,61 +341,42 @@ jobs:
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
           site_name='${{ needs.prerequisites.outputs.app_stack_name }}'
-          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}"
-          attempts=120
-          sleep_seconds=30
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}?response_format=GET_RSP_FORMAT_STATUS"
           response_file="$RUNNER_TEMP/site-status.json"
 
-          for attempt in $(seq 1 "$attempts"); do
-            http_code="$(curl \
-              --silent \
-              --show-error \
-              --output "$response_file" \
-              --write-out '%{http_code}' \
-              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-              --key "$RUNNER_TEMP/xc-api-key.pem" \
-              "$site_endpoint" || true)"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$response_file" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$site_endpoint" || true)"
 
-            if [[ "$http_code" == "200" ]]; then
-              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
-              operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
-              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty), .spec?.site_state, .replace_form?.spec?.site_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
-              if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
-                status_summary="no detailed status"
-              fi
-
-              echo "XC site state: ${site_state:-unknown}"
-              echo "XC site operational status: ${operational_status:-unknown}"
-              echo "XC site details: ${status_summary}"
-
-              case "$site_state" in
-                ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
-                  exit 0
-                  ;;
-                FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
-                  echo "::error::XC site entered a terminal state: ${site_state}."
-                  cat "$response_file"
-                  exit 1
-                  ;;
-              esac
-            else
-              echo "Unable to read XC site status yet (attempt ${attempt}/${attempts}, HTTP ${http_code:-curl-error})."
-              if [[ -s "$response_file" ]]; then
-                cat "$response_file"
-              fi
-            fi
-
-            if [[ "$attempt" -lt "$attempts" ]]; then
-              echo "XC site not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-              sleep "$sleep_seconds"
-            fi
-          done
-
-          echo "::error::Timed out waiting for the XC App Stack site to become ready."
-          if [[ -s "$response_file" ]]; then
-            cat "$response_file"
+          if [[ "$http_code" != "200" ]]; then
+            echo "Unable to read XC site status before kubeconfig generation (HTTP ${http_code:-curl-error}). Proceeding to mK8s readiness checks."
+            [[ -s "$response_file" ]] && cat "$response_file"
+            exit 0
           fi
-          exit 1
+
+          site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+          operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+          status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty), .spec?.site_state, .replace_form?.spec?.site_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
+          if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
+            status_summary="no detailed status"
+          fi
+
+          echo "XC site state: ${site_state:-unknown}"
+          echo "XC site operational status: ${operational_status:-unknown}"
+          echo "XC site details: ${status_summary}"
+
+          case "$site_state" in
+            FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
+              echo "::error::XC site entered a terminal state: ${site_state}."
+              cat "$response_file"
+              exit 1
+              ;;
+          esac
 
       - name: Terraform init kubeconfig helper
         shell: bash
@@ -433,24 +414,34 @@ jobs:
             tried_roles="${tried_roles:-} $role"
 
             apply_log="$RUNNER_TEMP/kubeconfig-apply-${role}.log"
-            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
-              -var="project_prefix=${PROJECT_PREFIX}" \
-              -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
-              -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
-              -var="service_credential_role=${role}" \
-              -var="credential_name=${credential_name}" \
-              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-              >"$apply_log" 2>&1
-            then
-              selected_role="$role"
-              break
-            fi
+            for attempt in $(seq 1 20); do
+              if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+                -var="project_prefix=${PROJECT_PREFIX}" \
+                -var="site_name=${{ needs.prerequisites.outputs.app_stack_name }}" \
+                -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
+                -var="service_credential_role=${role}" \
+                -var="credential_name=${credential_name}" \
+                -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+                -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+                >"$apply_log" 2>&1
+              then
+                selected_role="$role"
+                break 2
+              fi
 
-            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              if grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+                break
+              fi
+
+              if grep -Eqi "not found|failed to find site|site.*not.*ready|timed out|timeout|connection refused|unavailable|EOF" "$apply_log" && [[ "$attempt" -lt 20 ]]; then
+                echo "Site kubeconfig not available yet for role ${role} (attempt ${attempt}/20); retrying in 15s"
+                sleep 15
+                continue
+              fi
+
               cat "$apply_log"
               exit 1
-            fi
+            done
           done
 
           if [[ -z "$selected_role" ]]; then
@@ -494,6 +485,51 @@ jobs:
           echo "::error::Timed out waiting for the mK8s API server to become ready."
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name || true
+          exit 1
+
+      - name: Wait for mK8s control plane health
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          attempts=40
+          sleep_seconds=15
+
+          for attempt in $(seq 1 "$attempts"); do
+            node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
+            etcd_phase="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pod etcd-0 -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            etcd_ready="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pod etcd-0 -o jsonpath='{range .status.containerStatuses[*]}{.ready}{" "}{end}' 2>/dev/null || true)"
+            phobos_summary="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 --no-headers 2>/dev/null || true)"
+            phobos_running="$(printf '%s\n' "$phobos_summary" | awk '$3 == "Running" && $2 ~ /^2\/2$/ {count++} END {print count+0}')"
+
+            echo "Ready nodes: ${node_ready}"
+            echo "etcd-0 phase: ${etcd_phase:-missing} | containers ready: ${etcd_ready:-unknown}"
+            if [[ -n "$phobos_summary" ]]; then
+              echo "$phobos_summary"
+            else
+              echo "No phobos1 pods reported yet."
+            fi
+
+            if [[ "$node_ready" -ge 1 && "$etcd_phase" == "Running" && "$etcd_ready" == *"true true"* && "$phobos_running" -ge 1 ]]; then
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "mK8s control plane not healthy yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for critical ves-system pods to become healthy."
+          kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
+          kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -o wide || true
+          kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pod etcd-0 || true
+          kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pvc data-etcd-0 || true
+          kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 -o wide || true
+          phobos_pod="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+          if [[ -n "$phobos_pod" ]]; then
+            kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pod "$phobos_pod" || true
+          fi
           exit 1
 
       - name: Terraform init module 1
