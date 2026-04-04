@@ -42,10 +42,10 @@ jobs:
       TF_VAR_cloud_credential_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_create_cloud_credential: "false"
       TF_VAR_manage_site_infrastructure: "false"
-      TF_VAR_create_namespace: "true"
-      TF_VAR_create_re_virtual_site: "true"
-      TF_VAR_create_ce_virtual_site: "true"
-      TF_VAR_create_virtual_k8s: "true"
+      TF_VAR_create_namespace: "false"
+      TF_VAR_create_re_virtual_site: "false"
+      TF_VAR_create_ce_virtual_site: "false"
+      TF_VAR_create_virtual_k8s: "false"
       TF_VAR_virtual_k8s_name: buytime-online-vk8s
       TF_VAR_api_credential_name: m3dk-${{ github.run_id }}-${{ github.run_attempt }}
       TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
@@ -153,10 +153,10 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
             -var="cloud_credential_name=${CE_SITE_NAME}" \
             -var="create_cloud_credential=false" \
-            -var="create_namespace=true" \
-            -var="create_re_virtual_site=true" \
-            -var="create_ce_virtual_site=true" \
-            -var="create_virtual_k8s=true" \
+            -var="create_namespace=false" \
+            -var="create_re_virtual_site=false" \
+            -var="create_ce_virtual_site=false" \
+            -var="create_virtual_k8s=false" \
             -var="manage_site_infrastructure=false" \
             -var="virtual_k8s_name=buytime-online-vk8s" \
             -var="api_credential_name=${TF_VAR_api_credential_name}" \
@@ -264,10 +264,10 @@ jobs:
       TF_VAR_cloud_credential_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_create_cloud_credential: "false"
       TF_VAR_manage_site_infrastructure: "false"
-      TF_VAR_create_namespace: "true"
-      TF_VAR_create_re_virtual_site: "true"
-      TF_VAR_create_ce_virtual_site: "true"
-      TF_VAR_create_virtual_k8s: "true"
+      TF_VAR_create_namespace: "false"
+      TF_VAR_create_re_virtual_site: "false"
+      TF_VAR_create_ce_virtual_site: "false"
+      TF_VAR_create_virtual_k8s: "false"
       TF_VAR_virtual_k8s_name: buytime-online-vk8s
       TF_VAR_api_credential_name: m2dk-${{ github.run_id }}-${{ github.run_attempt }}
       TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
@@ -372,10 +372,10 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
             -var="cloud_credential_name=${CE_SITE_NAME}" \
             -var="create_cloud_credential=false" \
-            -var="create_namespace=true" \
-            -var="create_re_virtual_site=true" \
-            -var="create_ce_virtual_site=true" \
-            -var="create_virtual_k8s=true" \
+            -var="create_namespace=false" \
+            -var="create_re_virtual_site=false" \
+            -var="create_ce_virtual_site=false" \
+            -var="create_virtual_k8s=false" \
             -var="manage_site_infrastructure=false" \
             -var="virtual_k8s_name=buytime-online-vk8s" \
             -var="api_credential_name=${TF_VAR_api_credential_name}" \

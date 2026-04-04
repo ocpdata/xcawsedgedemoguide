@@ -401,6 +401,12 @@ Cuando el operador usa la aplicacion desde la VM Windows, el flujo real es este:
 
 Despues del deploy, el workflow tambien escribe en WordPress la configuracion del plugin BuyTime para que el frontend use automaticamente `recommendations.<namespace>.buytime.internal` sin intervencion manual en `wp-admin`.
 
+Sobre `Store Mode` en `wp-admin`:
+
+- `Buytime Kiosk` activa el flujo de sucursal o kiosk y prioriza `Recommendations` y `Synchronization`; este es el modo correcto para la VM Windows del branch.
+- `Buytime Online Store` activa el flujo de tienda online y prioriza `Lightning Deals`; este modo hace que el frontend consuma `http://deals.<user_domain>/deals` y use `http://deals.<user_domain>/health` como comprobacion de salud.
+- El selector no es cosmetico: define que experiencia principal muestra el plugin BuyTime en WordPress.
+
 ```mermaid
 sequenceDiagram
     participant VM as Windows kiosk VM
@@ -679,6 +685,7 @@ El job `module_1` usa principalmente:
 - La VM kiosk tambien escribe automaticamente el archivo `hosts` con los nombres internos del laboratorio.
 - El workflow normaliza `RECOMMENDATIONS_ORIGIN_DNS` y `RECOMMENDATIONS_ORIGIN_PORT` para que Terraform y las validaciones usen exactamente el mismo origen efectivo.
 - El workflow configura automaticamente el plugin BuyTime de WordPress con el dominio `recommendations.<namespace>.buytime.internal`.
+- Para pruebas sobre la VM Windows se debe mantener `Store Mode = Buytime Kiosk`; si se quiere validar `Lightning Deals`, hay que cambiar el sitio a `Store Mode = Buytime Online Store` o usar una instancia separada para el flujo online.
 - El deploy ya no depende de entrar manualmente a `wp-admin` para enlazar recomendaciones.
 - El job finaliza con validaciones de workloads, smoke tests HTTP y un resumen legible en GitHub Actions.
 - La credencial temporal usada para kubeconfig se revoca al final para no dejar acceso sobrante en XC.
