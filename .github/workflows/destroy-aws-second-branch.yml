@@ -2,15 +2,6 @@ name: Destroy AWS Second Retail Branch
 
 on:
   workflow_dispatch:
-    inputs:
-      destroy_scope:
-        description: Resources to destroy
-        required: true
-        default: full-stack
-        type: choice
-        options:
-          - full-stack
-          - kiosk-vm-only
 
 permissions:
   contents: read
@@ -121,7 +112,6 @@ jobs:
 
   destroy_second_branch_module_1:
     name: Destroy second branch module 1
-    if: ${{ github.event.inputs.destroy_scope == 'full-stack' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: derive_second_branch
@@ -297,7 +287,7 @@ jobs:
           {
             echo "## Destroy Summary"
             echo
-            echo "- Scope: full-stack"
+            echo "- Destroy mode: full workspace destroy"
             echo "- Phase: second_branch_module_1"
             echo "- Second App Stack site: ${APP_STACK_NAME}"
             echo "- Second XC namespace: ${{ needs.derive_second_branch.outputs.second_xc_namespace }}"
@@ -320,7 +310,6 @@ jobs:
 
   destroy_second_branch_prerequisites:
     name: Destroy second branch prerequisites
-    if: ${{ github.event.inputs.destroy_scope == 'full-stack' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     needs:
@@ -397,94 +386,9 @@ jobs:
           {
             echo "## Destroy Summary"
             echo
-            echo "- Scope: full-stack"
+            echo "- Destroy mode: full workspace destroy"
             echo "- Phase: second_branch_prerequisites"
             echo "- Workspace: ${{ needs.derive_second_branch.outputs.second_prerequisites_workspace }}"
             echo "- Second XC namespace: ${{ needs.derive_second_branch.outputs.second_xc_namespace }}"
             echo "- Second branch VPC CIDR: ${{ needs.derive_second_branch.outputs.second_vpc_cidr }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  destroy_second_branch_kiosk_vm:
-    name: Destroy second branch kiosk VM only
-    if: ${{ github.event.inputs.destroy_scope == 'kiosk-vm-only' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    needs: derive_second_branch
-    env:
-      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
-      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
-      TF_VAR_xc_namespace: ${{ needs.derive_second_branch.outputs.second_xc_namespace }}
-      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-      TF_VAR_vpc_cidr: ${{ needs.derive_second_branch.outputs.second_vpc_cidr }}
-      TF_VAR_existing_mk8s_cluster_name: ""
-      TF_VAR_windows_admin_password: ${{ vars.PASSWORD_VM_WINDOWS }}
-      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
-      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
-
-      - name: Decode XC API credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
-          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
-
-      - name: Validate XC API client certificate
-        shell: bash
-        run: |
-          set -euo pipefail
-          openssl pkcs12 \
-            -in "$RUNNER_TEMP/xc-api-creds.p12" \
-            -clcerts \
-            -legacy \
-            -nokeys \
-            -passin env:VES_P12_PASSWORD \
-            -out "$RUNNER_TEMP/xc-api-cert.pem"
-          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
-          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
-            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
-            exit 1
-          fi
-
-      - name: Terraform init second branch prerequisites
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/second-branch-prerequisites.backend.hcl" <<EOF
-          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
-          workspaces {
-            name = "${{ needs.derive_second_branch.outputs.second_prerequisites_workspace }}"
-          }
-          EOF
-          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
-            -backend-config="$RUNNER_TEMP/second-branch-prerequisites.backend.hcl"
-
-      - name: Terraform destroy second branch kiosk VM only
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve \
-            -target=aws_instance.kiosk
-
-      - name: Write second branch kiosk destroy summary
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo "## Destroy Summary"
-            echo
-            echo "- Scope: kiosk-vm-only"
-            echo "- Phase: second_branch_prerequisites target destroy"
-            echo "- Workspace: ${{ needs.derive_second_branch.outputs.second_prerequisites_workspace }}"
-            echo "- Target: aws_instance.kiosk"
-            echo "- Second XC namespace: ${{ needs.derive_second_branch.outputs.second_xc_namespace }}"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -72,7 +72,7 @@ Actualmente estan implementadas las etapas `module-1`, `module-2` y `module-3`. 
 
 Ademas del workflow principal, el repositorio incluye el workflow [.github/workflows/deploy-aws-second-branch.yml](.github/workflows/deploy-aws-second-branch.yml) para desplegar una segunda sucursal Retail Branch sin modificar el workflow staged principal.
 
-Como complemento, tambien existe el workflow [.github/workflows/destroy-aws-second-branch.yml](.github/workflows/destroy-aws-second-branch.yml) para desmontar esa sucursal derivada sin afectar la sucursal primaria ni el workflow staged principal.
+Como complemento, tambien existe el workflow [.github/workflows/destroy-aws-second-branch.yml](.github/workflows/destroy-aws-second-branch.yml) para desmontar esa sucursal derivada sin afectar la sucursal primaria ni el workflow staged principal. En su forma actual, este destroy no pide inputs manuales: deriva el namespace `-b`, reutiliza los mismos workspaces remotos generados para la segunda sucursal y ejecuta un `terraform destroy` completo sobre `module-1` y `prerequisites`.
 
 Ese workflow asume que [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) ya se ejecuto correctamente para la sucursal primaria y reutiliza los mismos modulos existentes bajo `aws-mk8s-vk8s/`: `namespace-probe`, `prerequisites`, `kubeconfig` y `module-1`.
 
