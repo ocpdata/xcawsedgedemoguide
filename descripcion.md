@@ -1,8 +1,8 @@
 # Descripcion del Workflow de Deploy
 
-Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar la base de infraestructura en AWS y F5 Distributed Cloud, despues publicar el contenido de `module_1` sobre el mK8s del sitio y finalmente dejar creado el AWS CE site que servira como base para el futuro Module 2.
+Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml), cuyo objetivo es desplegar por etapas la base de infraestructura en AWS y F5 Distributed Cloud, despues publicar el contenido de `module_1` sobre el mK8s del sitio, extender el entorno con Module 2 y completar la integracion de Lightning Deals en Module 3.
 
-Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress, crea el CE site en un job separado sin adelantar virtual sites ni vK8s de Module 2, espera a que ese CE site quede operativo y deja un resumen operativo al finalizar.
+Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente los plugins BuyTime dentro de WordPress, crea el CE site en un job separado sin adelantar foundations de Module 2, espera a que ese CE site quede operativo, reutiliza recursos XC ya existentes cuando corresponde y deja un resumen operativo al finalizar cada etapa.
 
 Las dependencias consumidas por el workflow se estan consolidando bajo `aws-mk8s-vk8s/`. En particular, el stack de CE usado por el job `ce_prerequisites` ya se ejecuta desde `aws-mk8s-vk8s/aws-ce-site`.
 
@@ -20,7 +20,7 @@ Recibe un input manual llamado `deployment_stage`, con estas opciones:
 - `module-2`
 - `module-3`
 
-Actualmente estan implementadas las etapas `module-1` y `module-2`. Si se selecciona `module-3`, el workflow falla rapido con un mensaje explicito para evitar ejecuciones ambiguas o falsas validaciones. Toda la configuracion de infraestructura sigue saliendo de variables y secretos del repositorio.
+Actualmente estan implementadas las etapas `module-1`, `module-2` y `module-3`. Toda la configuracion de infraestructura sigue saliendo de variables y secretos del repositorio.
 
 ## Que hace en terminos generales
 
@@ -37,7 +37,7 @@ Cuando se selecciona `module-1`, el deploy se divide en tres jobs secuenciales:
 
 Cuando se selecciona `module-2`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, amplia el stack de CE en `aws-mk8s-vk8s/aws-ce-site` solo para los foundations de Module 2, reutiliza la cloud credential ya existente del CE en lugar de recrearla, evita reprovisionar la VPC y el site CE y consulta XC para decidir si el namespace `buytime-online`, los virtual sites requeridos y el vK8s deben crearse o reutilizarse. Para el kubeconfig del vK8s usa un API credential con nombre corto y unico por ejecucion para evitar colisiones y respetar el limite de longitud de XC. Antes de aplicar `aws-mk8s-vk8s/module-2`, tambien consulta XC para decidir si el origin pool y el TCP load balancer del modulo de sincronizacion deben crearse o reutilizarse. Despues espera a que el API del vK8s quede operativo y aplica `aws-mk8s-vk8s/module-2` para desplegar el modulo de sincronizacion y su TCP load balancer. Ademas, genera un kubeconfig temporal del branch, ejecuta una validacion TCP real desde el entorno del sitio hacia `inventory-server.branches.buytime.internal:3000` y valida el plugin de sincronizacion de WordPress usando la misma opcion y la misma comprobacion `ping`/`pong` que usa la interfaz del README.
 
-Cuando se selecciona `module-3`, el workflow no intenta reutilizar jobs incompletos. En su lugar, corta la ejecucion en un job de validacion de etapa hasta que esa fase quede implementada en el mismo archivo.
+Cuando se selecciona `module-3`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, valida que los foundations de Module 2 ya existan en XC, genera un kubeconfig temporal del vK8s reutilizando el stack `aws-mk8s-vk8s/aws-ce-site` sin reprovisionar namespace, virtual sites ni vK8s, y luego aplica `aws-mk8s-vk8s/module-3` para desplegar el servicio de deals sobre el vK8s y crear su HTTP load balancer publico. Antes del apply consulta XC para decidir si el origin pool y el HTTP load balancer de Module 3 deben crearse o reutilizarse. Finalmente valida el rollout del servicio, comprueba desde el branch que `http://deals.<user_domain>/health` responda con un payload valido y actualiza el plugin de Lightning Deals de WordPress usando la misma opcion `deals_server[deals_server_url]` y la misma comprobacion `wp_remote_get('/health')` que usa la interfaz del README.
 
 ## Variables y secretos relevantes
 
@@ -50,6 +50,7 @@ Variables de repositorio usadas por el workflow:
 - `XC_NAMESPACE`
 - `XC_SERVICE_CREDENTIAL_ROLE`
 - `CE_SITE_NAME`
+- `USER_DOMAIN`
 - `EXISTING_MK8S_CLUSTER_NAME`
 - `PASSWORD_VM_WINDOWS`
 
@@ -81,8 +82,11 @@ flowchart TD
     L --> M[Deploy sync module y TCP LB]
     M --> N[Resumen final del modulo 2]
     N --> O[Fin del deploy]
-    B -->|module-3| P[Job stage_guard]
-    P --> Q[Fallo rapido: etapa aun no implementada]
+    B -->|module-3| P[Job module_3]
+    P --> Q[Validar foundations de Module 2 y generar kubeconfig vK8s]
+    Q --> R[Deploy deals module y HTTP LB]
+    R --> S[Validaciones de health y plugin Lightning Deals]
+    S --> T[Resumen final del modulo 3]
 ```
 
 ## Topologia de la arquitectura desplegada
@@ -92,9 +96,9 @@ La referencia original de `f5devcentral/xcawsedgedemoguide` presenta una arquite
 Dicho de otra forma:
 
 - la guia original muestra un escenario multisitio y multicloud mas amplio
-- este workflow automatiza el tramo **Pre-Requisites + Module 1**, y ademas crea el AWS CE site como base de red para el siguiente modulo
-- no despliega virtual sites de CE, vK8s, sincronizacion de inventario ni Regional Edge
-- si deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM, los HTTP load balancers internos de `kiosk` y `recommendations`, y WordPress configurado para usar el servicio de recomendaciones
+- este workflow automatiza el tramo **Pre-Requisites + Module 1 + Module 2 + Module 3** dentro de un mismo archivo staged
+- despliega los foundations de CE y vK8s necesarios para BuyTime Online, el modulo de sincronizacion interno y el servicio publico de Lightning Deals
+- deja operativa la sucursal o branch con App Stack, mK8s, kiosk VM, los servicios internos y externos necesarios, y WordPress configurado para usar recomendaciones, sincronizacion y Lightning Deals
 
 ### Alcance arquitectonico implementado por este workflow
 

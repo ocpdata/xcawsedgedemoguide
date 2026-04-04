@@ -21,8 +21,11 @@ env:
   TF_INPUT: "false"
   DEPLOYMENT_STAGE: ${{ inputs.deployment_stage }}
   MODULE2_ENVIRONMENT: buytime-online
+  MODULE3_ENVIRONMENT: buytime-online
   MODULE2_SYNC_DOMAIN: inventory-server.branches.buytime.internal
   MODULE2_SYNC_PORT: "3000"
+  USER_DOMAIN: ${{ vars.USER_DOMAIN }}
+  MODULE3_DEALS_DOMAIN: deals.${{ vars.USER_DOMAIN }}
   AWS_REGION: ${{ vars.AWS_REGION }}
   PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
   VPC_CIDR_MK8S: ${{ vars.VPC_CIDR_MK8S }}
@@ -32,26 +35,6 @@ env:
   CE_SITE_NAME: ${{ vars.CE_SITE_NAME }}
 
 jobs:
-  stage_guard:
-    name: Validate selected stage
-    runs-on: ubuntu-latest
-    if: ${{ inputs.deployment_stage == 'module-3' }}
-    steps:
-      - name: Fail for stages not implemented yet
-        shell: bash
-        run: |
-          set -euo pipefail
-          selected_stage='${{ inputs.deployment_stage }}'
-          {
-            echo "## Stage Selection"
-            echo
-            echo "- Requested stage: ${selected_stage}"
-            echo "- Status: not implemented in this workflow yet"
-            echo "- Available stages today: module-1, module-2"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Stage '${selected_stage}' is not implemented yet in this workflow. Use 'module-1' or 'module-2' for the current staged deploy paths."
-          exit 1
-
   prerequisites:
     name: Apply prerequisites
     runs-on: ubuntu-latest
@@ -1460,6 +1443,564 @@ jobs:
             echo "- vK8s kubeconfig generated: $(if [[ -s "$RUNNER_TEMP/module-2-vk8s-kubeconfig.yaml" ]]; then echo yes; else echo no; fi)"
             echo "- Branch to sync TCP validation: executed"
             echo "- WordPress synchronization plugin validation: executed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Revoke temporary branch kubeconfig credential
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig destroy -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="site_name=${APP_STACK_NAME}" \
+            -var="xc_namespace=${XC_NAMESPACE_OUTPUT}" \
+            -var="service_credential_role=${{ steps.branch_kubeconfig.outputs.service_credential_role }}" \
+            -var="credential_name=${{ steps.branch_kubeconfig.outputs.credential_name }}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
+
+  module_3:
+    name: Apply module 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: ${{ inputs.deployment_stage == 'module-3' }}
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_cloud_credential_name: ${{ vars.CE_SITE_NAME }}
+      TF_VAR_create_cloud_credential: "false"
+      TF_VAR_manage_site_infrastructure: "false"
+      TF_VAR_create_namespace: "false"
+      TF_VAR_create_re_virtual_site: "false"
+      TF_VAR_create_ce_virtual_site: "false"
+      TF_VAR_create_virtual_k8s: "false"
+      TF_VAR_virtual_k8s_name: buytime-online-vk8s
+      TF_VAR_api_credential_name: m3vk-${{ github.run_id }}-${{ github.run_attempt }}
+      TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
+      TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_CE }}
+      TF_VAR_create_module2_foundations: "true"
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+      TF_VAR_create_origin_pool: "true"
+      TF_VAR_create_http_loadbalancer: "true"
+      TF_VAR_user_domain: ${{ vars.USER_DOMAIN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX XC_NAMESPACE CE_SITE_NAME VPC_CIDR_CE USER_DOMAIN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import sys
+
+          cidr = os.environ["VPC_CIDR_CE"]
+          try:
+              ipaddress.ip_network(cidr, strict=False)
+          except Exception as exc:
+              print(f"::error::VPC_CIDR_CE must be a valid CIDR block. Received {cidr!r}: {exc}")
+              sys.exit(1)
+          PY
+
+      - name: Compute workspace names
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+          echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
+          echo "CE_WORKSPACE=${workspace_prefix}-aws-ce-site" >> "$GITHUB_ENV"
+          echo "MODULE3_WORKSPACE=${workspace_prefix}-module-3" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Validate XC API client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -clcerts \
+            -legacy \
+            -nokeys \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-cert.pem"
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -legacy \
+            -nocerts \
+            -nodes \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-key.pem"
+          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
+          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
+            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
+            exit 1
+          fi
+
+      - name: Restore prerequisites outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/module-3-prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${PREREQUISITES_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
+            -backend-config="$RUNNER_TEMP/module-3-prerequisites.backend.hcl"
+
+          app_stack_name="$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw app_stack_name 2>/dev/null || true)"
+          xc_namespace="$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw xc_namespace 2>/dev/null || true)"
+
+          if [[ -z "$app_stack_name" || -z "$xc_namespace" ]]; then
+            echo "::error::Unable to read prerequisite outputs from workspace ${PREREQUISITES_WORKSPACE}. Run stage module-1 successfully before module-3."
+            exit 1
+          fi
+
+          echo "APP_STACK_NAME=${app_stack_name}" >> "$GITHUB_ENV"
+          echo "XC_NAMESPACE_OUTPUT=${xc_namespace}" >> "$GITHUB_ENV"
+
+      - name: Terraform init branch kubeconfig helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig init
+
+      - name: Generate branch site kubeconfig
+        id: branch_kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix_part="$(printf '%s' "$PROJECT_PREFIX" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | cut -c1-12)"
+          prefix_part="${prefix_part#-}"
+          prefix_part="${prefix_part%-}"
+          if [[ -z "$prefix_part" ]]; then
+            prefix_part="xcaws"
+          fi
+          run_suffix="${GITHUB_RUN_ID:(-8)}"
+          credential_name="${prefix_part}-${run_suffix}-m3cfg"
+          credential_name="${credential_name#-}"
+          credential_name="${credential_name%-}"
+
+          candidates=()
+          if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
+            candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
+          fi
+          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+
+          selected_role=""
+          for role in "${candidates[@]}"; do
+            [[ -z "$role" ]] && continue
+            if [[ " ${tried_roles:-} " == *" $role "* ]]; then
+              continue
+            fi
+            tried_roles="${tried_roles:-} $role"
+
+            apply_log="$RUNNER_TEMP/module-3-branch-kubeconfig-${role}.log"
+            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+              -var="project_prefix=${PROJECT_PREFIX}" \
+              -var="site_name=${APP_STACK_NAME}" \
+              -var="xc_namespace=${XC_NAMESPACE_OUTPUT}" \
+              -var="service_credential_role=${role}" \
+              -var="credential_name=${credential_name}" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              >"$apply_log" 2>&1
+            then
+              selected_role="$role"
+              break
+            fi
+
+            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              cat "$apply_log"
+              exit 1
+            fi
+          done
+
+          if [[ -z "$selected_role" ]]; then
+            echo "::error::Unable to create the branch site kubeconfig credential with any known role. Set repository variable XC_SERVICE_CREDENTIAL_ROLE to a valid role for this tenant."
+            exit 1
+          fi
+
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/module-3-branch-kubeconfig.yaml"
+          echo "credential_name=${credential_name}" >> "$GITHUB_OUTPUT"
+          echo "kubeconfig_path=$RUNNER_TEMP/module-3-branch-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
+          echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init CE foundations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/module-3-ce.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${CE_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/aws-ce-site init \
+            -backend-config="$RUNNER_TEMP/module-3-ce.backend.hcl"
+
+      - name: Validate module 2 foundations exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          declare -a checks=(
+            "namespace:${api_root}/api/web/namespaces/${MODULE3_ENVIRONMENT}:module-3-namespace.json"
+            "ce-vsite:${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_sites/buytime-ce-sites:module-3-ce-vsite.json"
+            "re-vsite:${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_sites/buytime-re-sites:module-3-re-vsite.json"
+            "vk8s:${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_k8ss/buytime-online-vk8s:module-3-vk8s.json"
+          )
+
+          for check in "${checks[@]}"; do
+            IFS=':' read -r resource_label endpoint output_file <<< "$check"
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$RUNNER_TEMP/${output_file}" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+            if [[ "$http_code" != "200" ]]; then
+              echo "::error::Module 2 foundation ${resource_label} is missing or unreadable in XC (HTTP ${http_code:-curl-error}). Run module-2 successfully before module-3."
+              if [[ -s "$RUNNER_TEMP/${output_file}" ]]; then
+                cat "$RUNNER_TEMP/${output_file}"
+              fi
+              exit 1
+            fi
+          done
+
+      - name: Generate module 3 vK8s kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/aws-ce-site apply -auto-approve \
+            -var="cloud_credential_name=${CE_SITE_NAME}" \
+            -var="create_cloud_credential=false" \
+            -var="create_namespace=false" \
+            -var="create_re_virtual_site=false" \
+            -var="create_ce_virtual_site=false" \
+            -var="create_virtual_k8s=false" \
+            -var="manage_site_infrastructure=false" \
+            -var="virtual_k8s_name=buytime-online-vk8s" \
+            -var="api_credential_name=${TF_VAR_api_credential_name}" \
+            -var="environment=${MODULE3_ENVIRONMENT}" \
+            -var="site_name=${CE_SITE_NAME}" \
+            -var="vpc_cidr=${VPC_CIDR_CE}" \
+            -var="create_module2_foundations=true" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+            -var="kubeconfig_path=$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml"
+
+      - name: Wait for XC CE site readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          site_name='${{ vars.CE_SITE_NAME }}'
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}"
+          attempts=120
+          sleep_seconds=30
+          response_file="$RUNNER_TEMP/module-3-ce-site-status.json"
+
+          for attempt in $(seq 1 "$attempts"); do
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$site_endpoint" || true)"
+
+            if [[ "$http_code" == "200" ]]; then
+              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              case "$site_state" in
+                ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
+                  exit 0
+                  ;;
+                FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
+                  echo "::error::XC CE site entered a terminal state: ${site_state}."
+                  cat "$response_file"
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "XC CE site not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for the XC CE site to become ready during module-3."
+          if [[ -s "$response_file" ]]; then
+            cat "$response_file"
+          fi
+          exit 1
+
+      - name: Wait for vK8s API readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path="$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml"
+          if [[ ! -s "$kubeconfig_path" ]]; then
+            echo "::error::The module-3 vK8s kubeconfig was not generated."
+            exit 1
+          fi
+
+          attempts=80
+          sleep_seconds=15
+          cluster_info_log="$RUNNER_TEMP/module-3-vk8s-cluster-info.log"
+          namespace_probe_log="$RUNNER_TEMP/module-3-vk8s-namespace.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE3_ENVIRONMENT}" -o name >"$namespace_probe_log" 2>&1; then
+              cat "$cluster_info_log"
+              cat "$namespace_probe_log"
+              exit 0
+            fi
+
+            echo "vK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+          done
+
+          echo "::error::Timed out waiting for the module-3 vK8s API to become ready."
+          exit 1
+
+      - name: Terraform init module 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/module-3.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${MODULE3_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/module-3 init \
+            -backend-config="$RUNNER_TEMP/module-3.backend.hcl"
+
+      - name: Detect existing module 3 network resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          declare -a checks=(
+            "origin_pools:${MODULE3_ENVIRONMENT}-deals-pool:TF_VAR_create_origin_pool:module-3-origin-pool.json"
+            "http_loadbalancers:${MODULE3_ENVIRONMENT}-deals-server:TF_VAR_create_http_loadbalancer:module-3-http-loadbalancer.json"
+          )
+
+          for check in "${checks[@]}"; do
+            IFS=':' read -r resource_kind resource_name env_name output_file <<< "$check"
+            endpoint="${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/${resource_kind}/${resource_name}"
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$RUNNER_TEMP/${output_file}" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            case "$http_code" in
+              200)
+                echo "${env_name}=false" >> "$GITHUB_ENV"
+                echo "${resource_kind%?} ${resource_name} already exists in XC; module-3 will reuse it."
+                ;;
+              404)
+                echo "${env_name}=true" >> "$GITHUB_ENV"
+                echo "${resource_kind%?} ${resource_name} does not exist in XC yet; module-3 will create it."
+                ;;
+              *)
+                echo "::error::Unable to determine whether ${resource_kind%?} ${resource_name} exists in XC (HTTP ${http_code:-curl-error})."
+                if [[ -s "$RUNNER_TEMP/${output_file}" ]]; then
+                  cat "$RUNNER_TEMP/${output_file}"
+                fi
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Terraform apply module 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/module-3 apply -auto-approve \
+            -var="environment=${MODULE3_ENVIRONMENT}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+            -var="kubeconfig_path=$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml" \
+            -var="create_origin_pool=${TF_VAR_create_origin_pool}" \
+            -var="create_http_loadbalancer=${TF_VAR_create_http_loadbalancer}" \
+            -var="user_domain=${USER_DOMAIN}"
+
+      - name: Validate module 3 workloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path="$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml"
+          kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get deployments,svc -o wide
+          kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" rollout status deployment/deals-server-deployment --timeout=10m
+          kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get pods -o wide
+
+      - name: Validate module 3 deals endpoint from branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
+          pod_name='module3-deals-check'
+
+          cleanup() {
+            kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" delete pod "$pod_name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" delete pod "$pod_name" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" run "$pod_name" \
+            --image=busybox:1.36 \
+            --restart=Never \
+            --labels=app=module3-deals-check \
+            --command -- sh -c "sleep 3600"
+
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" wait --for=condition=Ready pod/"$pod_name" --timeout=5m
+
+          attempts=40
+          sleep_seconds=15
+          for attempt in $(seq 1 "$attempts"); do
+            response="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$pod_name" -- \
+              sh -c "wget -qO- http://${MODULE3_DEALS_DOMAIN}/health" 2>/dev/null || true)"
+            if [[ "$response" == *timestamp* ]]; then
+              echo "$response"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "Module 3 deals endpoint not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for the Module 3 deals endpoint to answer /health with a timestamp payload."
+          exit 1
+
+      - name: Validate module 3 lightning deals plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
+          deals_endpoint="${MODULE3_DEALS_DOMAIN}"
+          wordpress_pod="$(kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get pod -l app=wordpress -o jsonpath='{.items[0].metadata.name}')"
+          php_script="$RUNNER_TEMP/configure-buytime-lightning-deals.php"
+
+          if [[ -z "$wordpress_pod" ]]; then
+            echo "::error::Unable to locate the wordpress pod to validate the lightning deals plugin."
+            exit 1
+          fi
+
+          cat > "$php_script" <<PHP
+          <?php
+          require '/var/www/html/wp-load.php';
+
+          if (!class_exists('BuytimeLightningDeals')) {
+              require_once '/var/www/html/wp-content/plugins/plugin_buytime/buytime-lightning-deals.php';
+          }
+
+          \$endpoint = '${MODULE3_DEALS_DOMAIN}';
+          if (\$endpoint === '') {
+              fwrite(STDERR, "Missing lightning deals endpoint.\n");
+              exit(1);
+          }
+
+          \$options = get_option('deals_server');
+          if (!is_array(\$options)) {
+              \$options = array();
+          }
+
+          \$options['deals_server_url'] = \$endpoint;
+          update_option('deals_server', \$options, true);
+
+          \$current = get_option('deals_server');
+          if (!is_array(\$current) || (\$current['deals_server_url'] ?? '') !== \$endpoint) {
+              fwrite(STDERR, "Failed to persist the lightning deals server URL.\n");
+              exit(1);
+          }
+
+          \$plugin = new BuytimeLightningDeals('buytime_menu');
+          if (!\$plugin->check_server_status(\$endpoint)) {
+              fwrite(STDERR, "Connection with the Lightning Deals server failed.\n");
+              exit(1);
+          }
+
+          fwrite(STDOUT, "Connection with the Lightning Deals server established.\n");
+          PHP
+
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$wordpress_pod" -- php -v >/dev/null
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec -i "$wordpress_pod" -- sh -c 'cat > /tmp/configure-buytime-lightning-deals.php' < "$php_script"
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$wordpress_pod" -- php /tmp/configure-buytime-lightning-deals.php
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" exec "$wordpress_pod" -- rm -f /tmp/configure-buytime-lightning-deals.php || true
+
+      - name: Write module 3 summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Module 3 Summary"
+            echo
+            echo "- App Stack site: ${APP_STACK_NAME:-unknown}"
+            echo "- CE site name: ${CE_SITE_NAME}"
+            echo "- Online namespace: ${MODULE3_ENVIRONMENT}"
+            echo "- CE workspace: ${CE_WORKSPACE}"
+            echo "- Module 3 workspace: ${MODULE3_WORKSPACE}"
+            echo "- Deals domain: ${MODULE3_DEALS_DOMAIN}"
+            echo "- vK8s kubeconfig generated: $(if [[ -s "$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml" ]]; then echo yes; else echo no; fi)"
+            echo "- Deals health validation from branch: executed"
+            echo "- WordPress lightning deals plugin validation: executed"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Revoke temporary branch kubeconfig credential
