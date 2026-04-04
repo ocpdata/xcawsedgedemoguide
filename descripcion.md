@@ -20,7 +20,7 @@ Las dependencias consumidas por el workflow se estan consolidando bajo `aws-mk8s
 
 La plataforma BuyTime representa una arquitectura distribuida de retail y eCommerce donde una misma base aplicativa se extiende entre Retail Branch, Customer Edge y Regional Edge. El punto de partida es una aplicacion tradicional de tres capas, basada en WordPress, WooCommerce y MySQL, que se adapta a dos contextos operativos distintos.
 
-En el Retail Branch, el foco esta en la experiencia de kiosco para tienda fisica. Ese entorno necesita desplegarse de forma repetible, operar con una topologia estandar y conectarse con rapidez a servicios auxiliares, como el motor de recomendaciones y la base central de inventario. En la capa online, el foco cambia hacia servicios compartidos y promociones sensibles a la latencia, donde la conectividad entre Customer Edge, vK8s y el plano de exposicion de XC pasa a ser parte central de la arquitectura.
+En el Retail Branch, el foco esta en la experiencia de Kiosk para tienda fisica. Ese entorno necesita desplegarse de forma repetible, operar con una topologia estandar y conectarse con rapidez a servicios auxiliares, como el Recommendation Service y la base central de inventario. En la capa online, el foco cambia hacia servicios compartidos y promociones sensibles a la latencia, donde la conectividad entre Customer Edge, vK8s y el plano de exposicion de XC pasa a ser parte central de la arquitectura.
 
 Este workflow toma ese escenario y lo convierte en una secuencia staged. En vez de describir un laboratorio conceptual, automatiza los recursos concretos que permiten pasar de una sucursal funcional a una topologia distribuida con sincronizacion e integracion de Lightning Deals.
 
@@ -28,29 +28,29 @@ Este workflow toma ese escenario y lo convierte en una secuencia staged. En vez 
 
 Los tres modulos del workflow responden a tres casos de uso distintos dentro de la misma plataforma BuyTime. Cada uno agrega una capacidad tecnica nueva sobre la infraestructura ya creada.
 
-### Module 1: Retail Branch Kiosk and Recommendations
+### Module 1: Retail Branch Kiosk and Recommendation Service
 
 ![alt text](assets/overview-1.png)
 
-El primer caso de uso es el Retail Branch operando sobre App Stack con una experiencia kiosk basada en mK8s. Aqui el workflow crea o reutiliza la base del branch, despliega la aplicacion de tres capas y publica dos dominios internos: uno para el frontend kiosk y otro para el servicio de recommendations.
+El primer caso de uso es el Retail Branch operando sobre App Stack con una experiencia Kiosk basada en mK8s. Aqui el workflow crea o reutiliza la base del branch, despliega la aplicacion de tres capas y publica dos dominios internos: uno para el frontend Kiosk y otro para el Recommendation Service.
 
-Desde el punto de vista funcional, este modulo resuelve dos necesidades: exponer la experiencia de sucursal de forma consistente y conectar esa experiencia con un backend de recomendaciones sin depender de configuracion manual posterior en WordPress. El resultado es un branch operativo, con validaciones de readiness y smoke tests incluidos.
+Desde el punto de vista funcional, este modulo resuelve dos necesidades: exponer la experiencia de sucursal de forma consistente y conectar esa experiencia con un backend de Recommendation Service sin depender de configuracion manual posterior en WordPress. El resultado es un branch operativo, con validaciones de readiness y smoke tests incluidos.
 
-### Module 2: Synchronization with Customer Edge
+### Module 2: Synchronization Module with Customer Edge
 
 ![alt text](assets/overview-2.png)
 
-El segundo caso de uso se centra en la conectividad entre la sucursal y los servicios compartidos de BuyTime Online. Para eso, el workflow extiende el dominio de Customer Edge con su VPC dedicada, crea o reutiliza namespace, virtual sites y vK8s, y despliega el modulo de sincronizacion junto con un TCP load balancer.
+El segundo caso de uso se centra en la conectividad entre la sucursal y los servicios compartidos de BuyTime Online. Para eso, el workflow extiende el dominio de Customer Edge con su VPC dedicada, crea o reutiliza namespace, virtual sites y vK8s, y despliega el Synchronization Module junto con un TCP load balancer.
 
 La funcion principal de esta etapa es habilitar el intercambio de informacion con el inventario central mediante una topologia mas cercana al trafico real de aplicacion. No solo se crean los objetos de red y de compute necesarios, sino que tambien se valida la conectividad TCP desde el branch y se actualiza la configuracion del plugin correspondiente en WordPress.
 
-### Module 3: Lightning Deals and Public Exposure
+### Module 3: Lightning Deals Service and Public Exposure
 
 ![alt text](assets/overview-3.png)
 
-El tercer caso de uso agrega la capa de promociones online sensibles a latencia. Sobre el vK8s ya disponible, el workflow despliega el servicio de deals, crea o reutiliza su origin pool y publica un HTTP load balancer accesible por `deals.<user_domain>`.
+El tercer caso de uso agrega la capa de promociones online sensibles a latencia. Sobre el vK8s ya disponible, el workflow despliega el Lightning Deals service, crea o reutiliza su origin pool y publica un HTTP load balancer accesible por `deals.<user_domain>`.
 
-Esta etapa completa la topologia online del laboratorio: el branch ya no solo consume recomendaciones y sincronizacion, sino que tambien puede integrarse con una experiencia de Lightning Deals publicada hacia usuarios finales. El workflow cierra el ciclo validando el health endpoint del servicio y dejando actualizada la configuracion del plugin en WordPress.
+Esta etapa completa la topologia online del laboratorio: el branch ya no solo consume Recommendation Service y Synchronization Module, sino que tambien puede integrarse con una experiencia de Lightning Deals publicada hacia usuarios finales. El workflow cierra el ciclo validando el health endpoint del servicio y dejando actualizada la configuracion del plugin en WordPress.
 
 ## Nombre del workflow
 
