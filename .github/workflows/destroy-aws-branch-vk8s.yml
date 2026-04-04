@@ -1,0 +1,289 @@
+name: Destroy AWS Branch Fleet vK8s
+
+on:
+  workflow_dispatch:
+    inputs:
+      destroy_scope:
+        description: Resources to destroy
+        required: true
+        default: vk8s-and-virtual-site
+        type: choice
+        options:
+          - vk8s-only
+          - vk8s-and-virtual-site
+          - full-stack
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
+  XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
+  BRANCH_VK8S_NAMESPACE: ${{ vars.BRANCH_VK8S_NAMESPACE }}
+  BRANCH_VK8S_VIRTUAL_SITE_NAME: ${{ vars.BRANCH_VK8S_VIRTUAL_SITE_NAME }}
+  BRANCH_VK8S_NAME: ${{ vars.BRANCH_VK8S_NAME }}
+
+jobs:
+  destroy_branch_vk8s:
+    name: Destroy branch fleet vK8s
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in PROJECT_PREFIX XC_NAMESPACE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+
+          if [[ -z '${{ secrets.TF_API_TOKEN }}' ]]; then
+            echo '::error::Missing required repository secret: TF_API_TOKEN.'
+            exit 1
+          fi
+          if [[ -z '${{ secrets.TF_CLOUD_ORGANIZATION }}' ]]; then
+            echo '::error::Missing required repository secret: TF_CLOUD_ORGANIZATION.'
+            exit 1
+          fi
+          if [[ -z '${{ secrets.XC_API_URL }}' ]]; then
+            echo '::error::Missing required repository secret: XC_API_URL.'
+            exit 1
+          fi
+          if [[ -z '${{ secrets.XC_API_P12_FILE }}' ]]; then
+            echo '::error::Missing required repository secret: XC_API_P12_FILE.'
+            exit 1
+          fi
+          if [[ -z '${{ secrets.XC_P12_PASSWORD }}' ]]; then
+            echo '::error::Missing required repository secret: XC_P12_PASSWORD.'
+            exit 1
+          fi
+
+      - name: Normalize branch fleet settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_vk8s_namespace="${BRANCH_VK8S_NAMESPACE:-buytime-branches}"
+          branch_vk8s_namespace="${branch_vk8s_namespace// /-}"
+          branch_vk8s_namespace="${branch_vk8s_namespace#-}"
+          branch_vk8s_namespace="${branch_vk8s_namespace%-}"
+
+          branch_virtual_site_name="${BRANCH_VK8S_VIRTUAL_SITE_NAME:-buytime-branch-sites}"
+          branch_vk8s_name="${BRANCH_VK8S_NAME:-buytime-branches-vk8s}"
+
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+
+          api_credential_name="bfvk-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          {
+            echo "BRANCH_FLEET_NAMESPACE=${branch_vk8s_namespace}"
+            echo "BRANCH_FLEET_VIRTUAL_SITE_NAME=${branch_virtual_site_name}"
+            echo "BRANCH_FLEET_VK8S_NAME=${branch_vk8s_name}"
+            echo "BRANCH_FLEET_WORKSPACE=${workspace_prefix}-branch-vk8s"
+            echo "TF_VAR_environment=${branch_vk8s_namespace}"
+            echo "TF_VAR_virtual_site_name=${branch_virtual_site_name}"
+            echo "TF_VAR_virtual_k8s_name=${branch_vk8s_name}"
+            echo "TF_VAR_api_credential_name=${api_credential_name}"
+          } >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Validate XC API client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -clcerts \
+            -legacy \
+            -nokeys \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-cert.pem"
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -legacy \
+            -nocerts \
+            -nodes \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-key.pem"
+          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
+          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
+            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
+            exit 1
+          fi
+
+      - name: Terraform init branch fleet module
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/branch-vk8s.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${BRANCH_FLEET_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/branch-vk8s init \
+            -backend-config="$RUNNER_TEMP/branch-vk8s.backend.hcl"
+
+      - name: Read branch fleet Terraform state
+        shell: bash
+        run: |
+          set -euo pipefail
+          state_list_file="$RUNNER_TEMP/branch-vk8s-state.txt"
+          if terraform -chdir=aws-mk8s-vk8s/branch-vk8s state list >"$state_list_file" 2>/dev/null; then
+            cat "$state_list_file"
+          else
+            : > "$state_list_file"
+            echo "No managed resources found in Terraform state for ${BRANCH_FLEET_WORKSPACE}."
+          fi
+
+          has_namespace=false
+          has_virtual_site=false
+          has_virtual_k8s=false
+          has_api_credential=false
+          has_local_file=false
+
+          grep -qx 'volterra_namespace.branch_fleet\[0\]' "$state_list_file" && has_namespace=true || true
+          grep -qx 'volterra_virtual_site.branch_fleet\[0\]' "$state_list_file" && has_virtual_site=true || true
+          grep -qx 'volterra_virtual_k8s.branch_fleet\[0\]' "$state_list_file" && has_virtual_k8s=true || true
+          grep -qx 'volterra_api_credential.branch_fleet\[0\]' "$state_list_file" && has_api_credential=true || true
+          grep -qx 'local_file.kubeconfig\[0\]' "$state_list_file" && has_local_file=true || true
+
+          {
+            echo "HAS_NAMESPACE=${has_namespace}"
+            echo "HAS_VIRTUAL_SITE=${has_virtual_site}"
+            echo "HAS_VIRTUAL_K8S=${has_virtual_k8s}"
+            echo "HAS_API_CREDENTIAL=${has_api_credential}"
+            echo "HAS_LOCAL_FILE=${has_local_file}"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify XC objects before destroy
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          declare -a checks=(
+            "namespace|${BRANCH_FLEET_NAMESPACE}|${api_root}/api/web/namespaces/${BRANCH_FLEET_NAMESPACE}"
+            "virtual_site|${BRANCH_FLEET_VIRTUAL_SITE_NAME}|${api_root}/api/config/namespaces/${BRANCH_FLEET_NAMESPACE}/virtual_sites/${BRANCH_FLEET_VIRTUAL_SITE_NAME}"
+            "virtual_k8s|${BRANCH_FLEET_VK8S_NAME}|${api_root}/api/config/namespaces/${BRANCH_FLEET_NAMESPACE}/virtual_k8ss/${BRANCH_FLEET_VK8S_NAME}"
+          )
+
+          for check in "${checks[@]}"; do
+            IFS='|' read -r resource_kind resource_name endpoint <<< "$check"
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$RUNNER_TEMP/${resource_kind}.json" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            case "$http_code" in
+              200)
+                echo "XC ${resource_kind} ${resource_name} exists and is a valid destroy candidate."
+                ;;
+              404)
+                echo "XC ${resource_kind} ${resource_name} is already absent."
+                ;;
+              *)
+                echo "::error::Unable to determine whether XC ${resource_kind} ${resource_name} exists (HTTP ${http_code:-curl-error})."
+                [[ -s "$RUNNER_TEMP/${resource_kind}.json" ]] && cat "$RUNNER_TEMP/${resource_kind}.json"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Destroy branch fleet resources
+        shell: bash
+        env:
+          DESTROY_SCOPE: ${{ github.event.inputs.destroy_scope }}
+        run: |
+          set -euo pipefail
+          declare -a targets=()
+
+          if [[ "${HAS_LOCAL_FILE}" == "true" ]]; then
+            targets+=("-target=local_file.kubeconfig[0]")
+          fi
+          if [[ "${HAS_API_CREDENTIAL}" == "true" ]]; then
+            targets+=("-target=volterra_api_credential.branch_fleet[0]")
+          fi
+          if [[ "${HAS_VIRTUAL_K8S}" == "true" ]]; then
+            targets+=("-target=volterra_virtual_k8s.branch_fleet[0]")
+          fi
+
+          case "$DESTROY_SCOPE" in
+            vk8s-only)
+              ;;
+            vk8s-and-virtual-site)
+              if [[ "${HAS_VIRTUAL_SITE}" == "true" ]]; then
+                targets+=("-target=volterra_virtual_site.branch_fleet[0]")
+              fi
+              ;;
+            full-stack)
+              if [[ "${HAS_VIRTUAL_SITE}" == "true" ]]; then
+                targets+=("-target=volterra_virtual_site.branch_fleet[0]")
+              fi
+              if [[ "${HAS_NAMESPACE}" == "true" ]]; then
+                targets+=("-target=volterra_namespace.branch_fleet[0]")
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported destroy scope: $DESTROY_SCOPE"
+              exit 1
+              ;;
+          esac
+
+          if [[ "${#targets[@]}" -eq 0 ]]; then
+            echo "Nothing is managed in Terraform state for the selected destroy scope."
+            exit 0
+          fi
+
+          terraform -chdir=aws-mk8s-vk8s/branch-vk8s destroy -auto-approve "${targets[@]}"
+
+      - name: Write branch fleet destroy summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Branch Fleet vK8s Destroy Summary"
+            echo
+            echo "- Destroy scope: ${{ github.event.inputs.destroy_scope }}"
+            echo "- Namespace: ${BRANCH_FLEET_NAMESPACE}"
+            echo "- Virtual site: ${BRANCH_FLEET_VIRTUAL_SITE_NAME}"
+            echo "- Virtual k8s: ${BRANCH_FLEET_VK8S_NAME}"
+            echo "- Workspace: ${BRANCH_FLEET_WORKSPACE}"
+            echo "- Namespace managed in state: ${HAS_NAMESPACE:-unknown}"
+            echo "- Virtual site managed in state: ${HAS_VIRTUAL_SITE:-unknown}"
+            echo "- Virtual k8s managed in state: ${HAS_VIRTUAL_K8S:-unknown}"
+          } >> "$GITHUB_STEP_SUMMARY"
