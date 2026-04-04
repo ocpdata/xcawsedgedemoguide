@@ -36,6 +36,10 @@ resource "volterra_http_loadbalancer" "deals" {
   disable_trust_client_ip_headers  = true
   user_id_client_ip                = true
   disable_waf                      = true
+
+  depends_on = [
+    volterra_origin_pool.deals,
+  ]
 }
 
 resource "volterra_origin_pool" "deals" {
