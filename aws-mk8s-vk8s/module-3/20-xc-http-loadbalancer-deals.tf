@@ -10,9 +10,9 @@ resource "volterra_http_loadbalancer" "deals" {
 
   domains = ["deals.${var.user_domain}"]
 
-  https_auto_cert {
-    http_redirect = true
-    add_hsts      = true
+  http {
+    dns_volterra_managed = false
+    port                 = "80"
   }
 
   default_route_pools {
