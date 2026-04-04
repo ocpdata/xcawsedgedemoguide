@@ -1,0 +1,12 @@
+environment                  = "buytime-branches"
+create_namespace             = true
+create_virtual_site          = true
+create_virtual_k8s           = true
+create_api_credential        = true
+virtual_site_name            = "buytime-branch-sites"
+virtual_k8s_name             = "buytime-branches-vk8s"
+api_credential_name          = "buytime-branches-kubeconfig"
+branch_site_selector_expression = "site_group in (buytime-branches)"
+xc_api_url                   = "https://your_tenant_name.console.ves.volterra.io/api"
+xc_api_p12_file              = "../api-creds.p12"
+kubeconfig_path              = "../branch-vk8s-kubeconfig.yaml"
