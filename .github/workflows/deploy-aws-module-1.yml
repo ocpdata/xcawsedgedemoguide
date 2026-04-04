@@ -868,7 +868,7 @@ jobs:
       TF_VAR_create_ce_virtual_site: "true"
       TF_VAR_create_virtual_k8s: "true"
       TF_VAR_virtual_k8s_name: buytime-online-vk8s
-      TF_VAR_api_credential_name: buytime-online-kubeconfig-${{ github.run_id }}-${{ github.run_attempt }}
+      TF_VAR_api_credential_name: m2vk-${{ github.run_id }}-${{ github.run_attempt }}
       TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_CE }}
       TF_VAR_create_module2_foundations: "true"
