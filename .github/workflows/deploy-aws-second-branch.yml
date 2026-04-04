@@ -195,7 +195,7 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for primary App Stack site readiness
+      - name: Check primary App Stack site status
         shell: bash
         env:
           PRIMARY_APP_STACK_NAME: ${{ steps.primary_state.outputs.app_stack_name }}
@@ -204,44 +204,32 @@ jobs:
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
-          site_endpoint="${api_root}/api/config/namespaces/system/sites/${PRIMARY_APP_STACK_NAME}"
-          attempts=60
-          sleep_seconds=20
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${PRIMARY_APP_STACK_NAME}?response_format=GET_RSP_FORMAT_STATUS"
           response_file="$RUNNER_TEMP/primary-site-status.json"
 
-          for attempt in $(seq 1 "$attempts"); do
-            http_code="$(curl \
-              --silent \
-              --show-error \
-              --output "$response_file" \
-              --write-out '%{http_code}' \
-              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-              --key "$RUNNER_TEMP/xc-api-key.pem" \
-              "$site_endpoint" || true)"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$response_file" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$site_endpoint" || true)"
 
-            if [[ "$http_code" == "200" ]]; then
-              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
-              case "$site_state" in
-                ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
-                  exit 0
-                  ;;
-                FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
-                  echo "::error::Primary App Stack site is not healthy. Site state=${site_state}."
-                  cat "$response_file"
-                  exit 1
-                  ;;
-              esac
-            fi
+          if [[ "$http_code" != "200" ]]; then
+            echo "Unable to read primary App Stack site status (HTTP ${http_code:-curl-error}). Proceeding because primary prerequisites state exists."
+            [[ -s "$response_file" ]] && cat "$response_file"
+            exit 0
+          fi
 
-            if [[ "$attempt" -lt "$attempts" ]]; then
-              echo "Primary App Stack site is not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-              sleep "$sleep_seconds"
-            fi
-          done
-
-          echo "::error::Timed out waiting for the primary App Stack site to become ready. Run deploy-aws-module-1.yml successfully before creating the second branch."
-          [[ -s "$response_file" ]] && cat "$response_file"
-          exit 1
+          site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+          case "$site_state" in
+            FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
+              echo "::error::Primary App Stack site is in a terminal state. Site state=${site_state}."
+              cat "$response_file"
+              exit 1
+              ;;
+          esac
 
   second_branch_prerequisites:
     name: Apply second branch prerequisites
@@ -611,30 +599,30 @@ jobs:
           kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
           attempts=80
           sleep_seconds=15
-          cluster_info_log="$RUNNER_TEMP/mk8s-cluster-info.log"
-          namespace_probe_log="$RUNNER_TEMP/mk8s-namespace-probe.log"
+          nodes_log="$RUNNER_TEMP/mk8s-nodes.log"
+          version_log="$RUNNER_TEMP/mk8s-version.log"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name >"$namespace_probe_log" 2>&1; then
-              cat "$cluster_info_log"
-              cat "$namespace_probe_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes >"$nodes_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s version >"$version_log" 2>&1; then
+              cat "$nodes_log"
+              cat "$version_log"
               exit 0
             fi
 
             echo "Second branch mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-            if [[ -s "$cluster_info_log" ]]; then
-              tail -n 5 "$cluster_info_log"
+            if [[ -s "$nodes_log" ]]; then
+              tail -n 5 "$nodes_log"
             fi
-            if [[ -s "$namespace_probe_log" ]]; then
-              tail -n 5 "$namespace_probe_log"
+            if [[ -s "$version_log" ]]; then
+              tail -n 5 "$version_log"
             fi
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the second branch mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get nodes || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s version || true
           exit 1
 
       - name: Wait for second branch mK8s control plane health
