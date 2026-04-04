@@ -1681,14 +1681,14 @@ jobs:
           api_root="${api_root%/api}"
 
           declare -a checks=(
-            "namespace:${api_root}/api/web/namespaces/${MODULE3_ENVIRONMENT}:module-3-namespace.json"
-            "ce-vsite:${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_sites/buytime-ce-sites:module-3-ce-vsite.json"
-            "re-vsite:${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_sites/buytime-re-sites:module-3-re-vsite.json"
-            "vk8s:${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_k8ss/buytime-online-vk8s:module-3-vk8s.json"
+            "namespace|${api_root}/api/web/namespaces/${MODULE3_ENVIRONMENT}|module-3-namespace.json"
+            "ce-vsite|${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_sites/buytime-ce-sites|module-3-ce-vsite.json"
+            "re-vsite|${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_sites/buytime-re-sites|module-3-re-vsite.json"
+            "vk8s|${api_root}/api/config/namespaces/${MODULE3_ENVIRONMENT}/virtual_k8ss/buytime-online-vk8s|module-3-vk8s.json"
           )
 
           for check in "${checks[@]}"; do
-            IFS=':' read -r resource_label endpoint output_file <<< "$check"
+            IFS='|' read -r resource_label endpoint output_file <<< "$check"
             http_code="$(curl \
               --silent \
               --show-error \
