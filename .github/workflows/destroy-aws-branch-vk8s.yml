@@ -2,16 +2,6 @@ name: Destroy AWS Branch Fleet vK8s
 
 on:
   workflow_dispatch:
-    inputs:
-      destroy_scope:
-        description: Resources to destroy
-        required: true
-        default: vk8s-and-virtual-site
-        type: choice
-        options:
-          - vk8s-only
-          - vk8s-and-virtual-site
-          - full-stack
 
 permissions:
   contents: read
@@ -181,6 +171,7 @@ jobs:
             echo "HAS_VIRTUAL_K8S=${has_virtual_k8s}"
             echo "HAS_API_CREDENTIAL=${has_api_credential}"
             echo "HAS_LOCAL_FILE=${has_local_file}"
+            echo "HAS_STATE=$(if [[ -s \"$state_list_file\" ]]; then echo true; else echo false; fi)"
           } >> "$GITHUB_ENV"
 
       - name: Verify XC objects before destroy
@@ -225,50 +216,14 @@ jobs:
 
       - name: Destroy branch fleet resources
         shell: bash
-        env:
-          DESTROY_SCOPE: ${{ github.event.inputs.destroy_scope }}
         run: |
           set -euo pipefail
-          declare -a targets=()
-
-          if [[ "${HAS_LOCAL_FILE}" == "true" ]]; then
-            targets+=("-target=local_file.kubeconfig[0]")
-          fi
-          if [[ "${HAS_API_CREDENTIAL}" == "true" ]]; then
-            targets+=("-target=volterra_api_credential.branch_fleet[0]")
-          fi
-          if [[ "${HAS_VIRTUAL_K8S}" == "true" ]]; then
-            targets+=("-target=volterra_virtual_k8s.branch_fleet[0]")
-          fi
-
-          case "$DESTROY_SCOPE" in
-            vk8s-only)
-              ;;
-            vk8s-and-virtual-site)
-              if [[ "${HAS_VIRTUAL_SITE}" == "true" ]]; then
-                targets+=("-target=volterra_virtual_site.branch_fleet[0]")
-              fi
-              ;;
-            full-stack)
-              if [[ "${HAS_VIRTUAL_SITE}" == "true" ]]; then
-                targets+=("-target=volterra_virtual_site.branch_fleet[0]")
-              fi
-              if [[ "${HAS_NAMESPACE}" == "true" ]]; then
-                targets+=("-target=volterra_namespace.branch_fleet[0]")
-              fi
-              ;;
-            *)
-              echo "::error::Unsupported destroy scope: $DESTROY_SCOPE"
-              exit 1
-              ;;
-          esac
-
-          if [[ "${#targets[@]}" -eq 0 ]]; then
-            echo "Nothing is managed in Terraform state for the selected destroy scope."
+          if [[ "${HAS_STATE:-false}" != "true" ]]; then
+            echo "Nothing is managed in Terraform state for ${BRANCH_FLEET_WORKSPACE}."
             exit 0
           fi
 
-          terraform -chdir=aws-mk8s-vk8s/branch-vk8s destroy -auto-approve "${targets[@]}"
+          terraform -chdir=aws-mk8s-vk8s/branch-vk8s destroy -auto-approve
 
       - name: Write branch fleet destroy summary
         if: always()
@@ -278,11 +233,12 @@ jobs:
           {
             echo "## Branch Fleet vK8s Destroy Summary"
             echo
-            echo "- Destroy scope: ${{ github.event.inputs.destroy_scope }}"
+            echo "- Destroy mode: full workspace destroy"
             echo "- Namespace: ${BRANCH_FLEET_NAMESPACE}"
             echo "- Virtual site: ${BRANCH_FLEET_VIRTUAL_SITE_NAME}"
             echo "- Virtual k8s: ${BRANCH_FLEET_VK8S_NAME}"
             echo "- Workspace: ${BRANCH_FLEET_WORKSPACE}"
+            echo "- Terraform state present: ${HAS_STATE:-unknown}"
             echo "- Namespace managed in state: ${HAS_NAMESPACE:-unknown}"
             echo "- Virtual site managed in state: ${HAS_VIRTUAL_SITE:-unknown}"
             echo "- Virtual k8s managed in state: ${HAS_VIRTUAL_K8S:-unknown}"

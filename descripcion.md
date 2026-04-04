@@ -103,13 +103,9 @@ La logica de agregacion sigue el modo de diseno basado en selector por label com
 
 Con esto, el `vK8s` no queda amarrado a una lista estatica de sucursales. En cambio, incorpora automaticamente los App Stack sites que tengan esa label dentro de XC.
 
-Ademas del workflow de creacion, el repositorio incluye el workflow [.github/workflows/destroy-aws-branch-vk8s.yml](.github/workflows/destroy-aws-branch-vk8s.yml) para destruir ese branch-fleet `vK8s`. Ese workflow permite tres alcances:
+Ademas del workflow de creacion, el repositorio incluye el workflow [.github/workflows/destroy-aws-branch-vk8s.yml](.github/workflows/destroy-aws-branch-vk8s.yml) para destruir ese branch-fleet `vK8s`. En su forma actual, ese workflow no pide inputs manuales: ejecuta un `terraform destroy` completo contra el mismo workspace remoto usado por el deploy y elimina exactamente los recursos que ese workspace tenga bajo control.
 
-- `vk8s-only`
-- `vk8s-and-virtual-site`
-- `full-stack`
-
-Esto permite borrar solo el `vK8s`, borrar tambien el `virtual_site` o desmontar por completo el namespace `buytime-branches` cuando el laboratorio ya no se necesite.
+En la practica, eso significa que desmonta el `virtual_k8s`, el `virtual_site`, el API credential temporal y, si el namespace `buytime-branches` fue creado por ese mismo workspace, tambien elimina el namespace. Si algun recurso solo fue reutilizado y no esta en el state, el destroy no lo borra.
 
 ## Etiquetado manual de sucursales para el branch fleet
 
