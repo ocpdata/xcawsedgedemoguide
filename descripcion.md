@@ -4,19 +4,27 @@ Este documento describe el workflow [.github/workflows/deploy-aws-module-1.yml](
 
 Ademas del aprovisionamiento, la version actual del workflow tambien valida el estado final del branch, configura automaticamente el plugin BuyTime de recomendaciones en WordPress, crea el CE site en un job separado sin adelantar virtual sites ni vK8s de Module 2, espera a que ese CE site quede operativo y deja un resumen operativo al finalizar.
 
+Las dependencias consumidas por el workflow se estan consolidando bajo `aws-mk8s-vk8s/`. En particular, el stack de CE usado por el job `ce_prerequisites` ya se ejecuta desde `aws-mk8s-vk8s/aws-ce-site`.
+
 ## Nombre del workflow
 
-`Deploy AWS Prerequisites And Module 1`
+`Deploy AWS Staged Modules`
 
 ## Como se ejecuta
 
 El workflow se ejecuta manualmente mediante `workflow_dispatch`.
 
-No recibe parametros de entrada en la invocacion. Toda la configuracion se toma desde variables y secretos del repositorio.
+Recibe un input manual llamado `deployment_stage`, con estas opciones:
+
+- `module-1`
+- `module-2`
+- `module-3`
+
+Actualmente estan implementadas las etapas `module-1` y `module-2`. Si se selecciona `module-3`, el workflow falla rapido con un mensaje explicito para evitar ejecuciones ambiguas o falsas validaciones. Toda la configuracion de infraestructura sigue saliendo de variables y secretos del repositorio.
 
 ## Que hace en terminos generales
 
-El deploy se divide en tres jobs secuenciales:
+Cuando se selecciona `module-1`, el deploy se divide en tres jobs secuenciales:
 
 1. `prerequisites`
    Crea o reutiliza la base necesaria para el entorno: namespace XC, VPC, subnet, App Stack site, mK8s y VM kiosk.
@@ -26,6 +34,10 @@ El deploy se divide en tres jobs secuenciales:
 
 3. `ce_prerequisites`
     Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, deja fuera los virtual sites y el vK8s que pertenecen al Module 2, y espera a que el site CE alcance un estado operativo en XC.
+
+Cuando se selecciona `module-2`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, amplia el stack de CE en `aws-mk8s-vk8s/aws-ce-site` para crear namespace, virtual sites, vK8s y kubeconfig, espera a que el API del vK8s quede operativo y luego aplica `aws-mk8s-vk8s/module-2` para desplegar el modulo de sincronizacion y su TCP load balancer. Ademas, genera un kubeconfig temporal del branch, ejecuta una validacion TCP real desde el entorno del sitio hacia `inventory-server.branches.buytime.internal:3000` y valida el plugin de sincronizacion de WordPress usando la misma opcion y la misma comprobacion `ping`/`pong` que usa la interfaz del README.
+
+Cuando se selecciona `module-3`, el workflow no intenta reutilizar jobs incompletos. En su lugar, corta la ejecucion en un job de validacion de etapa hasta que esa fase quede implementada en el mismo archivo.
 
 ## Variables y secretos relevantes
 
@@ -55,14 +67,22 @@ Secrets usados por el workflow:
 
 ```mermaid
 flowchart TD
-    A[Inicio manual del workflow] --> B[Job prerequisites]
-    B --> C[Recolectar outputs: site, mK8s, namespace, IPs y acceso VM]
-    C --> D[Job module_1]
-    D --> E[Validaciones funcionales del branch]
-    E --> F[Job ce_prerequisites]
-    F --> G[Validacion de readiness del CE]
-    G --> H[Resumen final del deploy]
-    H --> I[Fin del deploy]
+    A[Inicio manual del workflow] --> B{deployment_stage}
+    B -->|module-1| C[Job prerequisites]
+    C --> D[Recolectar outputs: site, mK8s, namespace, IPs y acceso VM]
+    D --> E[Job module_1]
+    E --> F[Validaciones funcionales del branch]
+    F --> G[Job ce_prerequisites]
+    G --> H[Validacion de readiness del CE]
+    H --> I[Resumen final del deploy]
+    I --> J[Fin del deploy]
+    B -->|module-2| K[Job module_2]
+    K --> L[Expandir CE con namespace, virtual sites y vK8s]
+    L --> M[Deploy sync module y TCP LB]
+    M --> N[Resumen final del modulo 2]
+    N --> O[Fin del deploy]
+    B -->|module-3| P[Job stage_guard]
+    P --> Q[Fallo rapido: etapa aun no implementada]
 ```
 
 ## Topologia de la arquitectura desplegada

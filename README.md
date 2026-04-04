@@ -501,7 +501,7 @@ Open the calendar and select the expiry date. Then click the **Download Credenti
 
 After downloading the Kubeconfig for the created virtual K8s, we can deploy the synchronization module to vK8s. To do that, run the following command:
 
-    > kubectl --kubeconfig ./your_vk8s_kubeconfig.yaml apply -f ./deployments/ce-vk8s-inventory-server.yaml
+    > kubectl --kubeconfig ./your_vk8s_kubeconfig.yaml apply -f ./aws-mk8s-vk8s/module-2/manifests/inventory-server.yaml
 
     deployment.apps/inventory-server-deployment created
     service/inventory-server-service created
