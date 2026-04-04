@@ -443,6 +443,56 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for second branch namespace availability in XC
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          namespace='${{ needs.second_branch_prerequisites.outputs.xc_namespace }}'
+          namespace_endpoint="${api_root}/api/web/namespaces/${namespace}"
+          attempts=30
+          sleep_seconds=10
+
+          for attempt in $(seq 1 "$attempts"); do
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$RUNNER_TEMP/second-branch-namespace.json" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$namespace_endpoint" || true)"
+
+            case "$http_code" in
+              200)
+                echo "XC namespace ${namespace} is available."
+                exit 0
+                ;;
+              404)
+                ;;
+              *)
+                echo "::error::Unable to confirm XC namespace ${namespace} availability (HTTP ${http_code:-curl-error})."
+                if [[ -s "$RUNNER_TEMP/second-branch-namespace.json" ]]; then
+                  cat "$RUNNER_TEMP/second-branch-namespace.json"
+                fi
+                exit 1
+                ;;
+            esac
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "XC namespace ${namespace} not visible yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for XC namespace ${namespace} to become available."
+          if [[ -s "$RUNNER_TEMP/second-branch-namespace.json" ]]; then
+            cat "$RUNNER_TEMP/second-branch-namespace.json"
+          fi
+          exit 1
+
       - name: Wait for second branch App Stack site readiness
         shell: bash
         run: |
