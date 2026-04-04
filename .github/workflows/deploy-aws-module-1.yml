@@ -864,6 +864,8 @@ jobs:
       TF_VAR_create_cloud_credential: "false"
       TF_VAR_manage_site_infrastructure: "false"
       TF_VAR_create_namespace: "true"
+      TF_VAR_create_re_virtual_site: "true"
+      TF_VAR_create_ce_virtual_site: "true"
       TF_VAR_site_name: ${{ vars.CE_SITE_NAME }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_CE }}
       TF_VAR_create_module2_foundations: "true"
@@ -1093,6 +1095,50 @@ jobs:
               ;;
           esac
 
+      - name: Detect existing module 2 virtual sites
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          declare -a checks=(
+            "buytime-re-sites:TF_VAR_create_re_virtual_site:module-2-re-virtual-site.json"
+            "buytime-ce-sites:TF_VAR_create_ce_virtual_site:module-2-ce-virtual-site.json"
+          )
+
+          for check in "${checks[@]}"; do
+            IFS=':' read -r virtual_site_name env_name output_file <<< "$check"
+            endpoint="${api_root}/api/config/namespaces/${MODULE2_ENVIRONMENT}/virtual_sites/${virtual_site_name}"
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$RUNNER_TEMP/${output_file}" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            case "$http_code" in
+              200)
+                echo "${env_name}=false" >> "$GITHUB_ENV"
+                echo "Virtual site ${virtual_site_name} already exists in XC; module-2 will reuse it."
+                ;;
+              404)
+                echo "${env_name}=true" >> "$GITHUB_ENV"
+                echo "Virtual site ${virtual_site_name} does not exist in XC yet; module-2 will create it."
+                ;;
+              *)
+                echo "::error::Unable to determine whether virtual site ${virtual_site_name} exists in XC (HTTP ${http_code:-curl-error})."
+                if [[ -s "$RUNNER_TEMP/${output_file}" ]]; then
+                  cat "$RUNNER_TEMP/${output_file}"
+                fi
+                exit 1
+                ;;
+            esac
+          done
+
       - name: Terraform apply CE foundations for module 2
         shell: bash
         run: |
@@ -1101,6 +1147,8 @@ jobs:
             -var="cloud_credential_name=${CE_SITE_NAME}" \
             -var="create_cloud_credential=false" \
             -var="create_namespace=${TF_VAR_create_namespace}" \
+            -var="create_re_virtual_site=${TF_VAR_create_re_virtual_site}" \
+            -var="create_ce_virtual_site=${TF_VAR_create_ce_virtual_site}" \
             -var="manage_site_infrastructure=false" \
             -var="environment=${MODULE2_ENVIRONMENT}" \
             -var="site_name=${CE_SITE_NAME}" \

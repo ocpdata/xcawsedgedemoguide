@@ -1,7 +1,12 @@
-resource "volterra_virtual_site" "buytime_re" {
-  count = var.create_module2_foundations ? 1 : 0
+locals {
+  buytime_re_virtual_site_name = "buytime-re-sites"
+  buytime_ce_virtual_site_name = "buytime-ce-sites"
+}
 
-  name      = "buytime-re-sites"
+resource "volterra_virtual_site" "buytime_re" {
+  count = var.create_module2_foundations && var.create_re_virtual_site ? 1 : 0
+
+  name      = local.buytime_re_virtual_site_name
   namespace = local.module2_namespace_ref
 
   site_selector {
@@ -13,9 +18,9 @@ resource "volterra_virtual_site" "buytime_re" {
 }
 
 resource "volterra_virtual_site" "buytime_ce" {
-  count = var.create_module2_foundations ? 1 : 0
+  count = var.create_module2_foundations && var.create_ce_virtual_site ? 1 : 0
 
-  name      = "buytime-ce-sites"
+  name      = local.buytime_ce_virtual_site_name
   namespace = local.module2_namespace_ref
 
   site_selector {
@@ -32,11 +37,11 @@ resource "volterra_virtual_k8s" "buytime" {
   name      = "buytime-online-vk8s"
   namespace = local.module2_namespace_ref
   vsite_refs {
-    name = volterra_virtual_site.buytime_ce[0].name
+    name = local.buytime_ce_virtual_site_name
   }
     
   vsite_refs {
-    name = volterra_virtual_site.buytime_re[0].name
+    name = local.buytime_re_virtual_site_name
   }
 }
 

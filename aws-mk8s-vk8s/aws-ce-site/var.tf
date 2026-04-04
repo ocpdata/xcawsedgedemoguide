@@ -66,6 +66,18 @@ variable "create_namespace" {
   description = "Whether Terraform should create the Module 2 namespace or reuse an existing one."
 }
 
+variable "create_re_virtual_site" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the Regional Edge virtual site or reuse an existing one."
+}
+
+variable "create_ce_virtual_site" {
+  type        = bool
+  default     = true
+  description = "Whether Terraform should create the Customer Edge virtual site or reuse an existing one."
+}
+
 variable "aws_region" {
   type    = string
   default = "us-east-2"
