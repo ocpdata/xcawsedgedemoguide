@@ -68,6 +68,22 @@ Recibe un input manual llamado `deployment_stage`, con estas opciones:
 
 Actualmente estan implementadas las etapas `module-1`, `module-2` y `module-3`. Toda la configuracion de infraestructura sigue saliendo de variables y secretos del repositorio.
 
+## Workflow adicional para segunda sucursal
+
+Ademas del workflow principal, el repositorio incluye el workflow [.github/workflows/deploy-aws-second-branch.yml](.github/workflows/deploy-aws-second-branch.yml) para desplegar una segunda sucursal Retail Branch sin modificar el workflow staged principal.
+
+Ese workflow asume que [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) ya se ejecuto correctamente para la sucursal primaria y reutiliza los mismos modulos existentes bajo `aws-mk8s-vk8s/`: `namespace-probe`, `prerequisites`, `kubeconfig` y `module-1`.
+
+Su comportamiento principal es este:
+
+- valida que la sucursal primaria exista y que su App Stack site este operativo
+- deduce la segunda sucursal reemplazando el sufijo `-a` de `XC_NAMESPACE` por `-b`
+- deduce el CIDR del segundo branch a partir de `VPC_CIDR_MK8S`, incrementando el segundo octeto y manteniendo mascara `/16`
+- crea una segunda VPC, un segundo App Stack site, un segundo mK8s y una segunda VM Windows kiosk
+- aplica `module-1` sobre esa sucursal y valida workloads, plugin de recommendations y smoke tests del kiosk
+
+Este workflow no introduce variables ni secretos nuevos. Reutiliza las mismas variables y secretos del workflow principal, por lo que los requisitos de configuracion siguen siendo los mismos mientras `XC_NAMESPACE` termine en `-a` y `VPC_CIDR_MK8S` sea una red IPv4 `/16`.
+
 ## Que hace en terminos generales
 
 Cuando se selecciona `module-1`, el deploy se divide en tres jobs secuenciales:

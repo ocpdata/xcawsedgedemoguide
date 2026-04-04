@@ -1,0 +1,802 @@
+name: Deploy AWS Second Retail Branch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
+  VPC_CIDR_MK8S: ${{ vars.VPC_CIDR_MK8S }}
+  XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
+  XC_SERVICE_CREDENTIAL_ROLE: ${{ vars.XC_SERVICE_CREDENTIAL_ROLE }}
+  RECOMMENDATIONS_ORIGIN_DNS: ${{ vars.RECOMMENDATIONS_ORIGIN_DNS }}
+  RECOMMENDATIONS_ORIGIN_PORT: ${{ vars.RECOMMENDATIONS_ORIGIN_PORT }}
+
+jobs:
+  validate_primary_branch:
+    name: Validate primary branch dependency
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      primary_app_stack_name: ${{ steps.primary_state.outputs.app_stack_name }}
+      primary_mk8s_cluster_name: ${{ steps.primary_state.outputs.mk8s_cluster_name }}
+      primary_xc_namespace: ${{ steps.primary_state.outputs.xc_namespace }}
+      second_xc_namespace: ${{ steps.derive.outputs.second_xc_namespace }}
+      second_vpc_cidr: ${{ steps.derive.outputs.second_vpc_cidr }}
+      second_workspace_prefix: ${{ steps.derive.outputs.second_workspace_prefix }}
+      second_prerequisites_workspace: ${{ steps.derive.outputs.second_prerequisites_workspace }}
+      second_module1_workspace: ${{ steps.derive.outputs.second_module1_workspace }}
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Validate workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AWS_REGION PROJECT_PREFIX VPC_CIDR_MK8S XC_NAMESPACE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}."
+              exit 1
+            fi
+          done
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import sys
+
+          cidr = os.environ["VPC_CIDR_MK8S"]
+          try:
+              network = ipaddress.ip_network(cidr, strict=False)
+          except Exception as exc:
+              print(f"::error::VPC_CIDR_MK8S must be a valid CIDR block. Received {cidr!r}: {exc}")
+              sys.exit(1)
+
+          if network.version != 4 or network.prefixlen != 16:
+              print("::error::VPC_CIDR_MK8S must be an IPv4 /16 network so the second branch CIDR can be derived automatically for this lab.")
+              sys.exit(1)
+          PY
+
+      - name: Compute primary workspace name
+        id: primary_naming
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          workspace_prefix="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          workspace_prefix="${workspace_prefix#-}"
+          workspace_prefix="${workspace_prefix%-}"
+          if [[ -z "$workspace_prefix" ]]; then
+            workspace_prefix="xcawsedgedemo"
+          fi
+          echo "workspace_prefix=$workspace_prefix" >> "$GITHUB_OUTPUT"
+          echo "PRIMARY_PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
+
+      - name: Terraform init primary prerequisites workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/primary-prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${PRIMARY_PREREQUISITES_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
+            -backend-config="$RUNNER_TEMP/primary-prerequisites.backend.hcl"
+
+      - name: Read primary branch state
+        id: primary_state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw app_stack_name >/dev/null 2>&1; then
+            echo "::error::Primary branch prerequisites workspace ${PRIMARY_PREREQUISITES_WORKSPACE} does not contain outputs yet. Run deploy-aws-module-1.yml successfully before creating the second branch."
+            exit 1
+          fi
+
+          echo "app_stack_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw app_stack_name)" >> "$GITHUB_OUTPUT"
+          echo "mk8s_cluster_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw mk8s_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "xc_namespace=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw xc_namespace)" >> "$GITHUB_OUTPUT"
+
+      - name: Derive second branch inputs
+        id: derive
+        shell: bash
+        env:
+          PRIMARY_XC_NAMESPACE: ${{ steps.primary_state.outputs.xc_namespace }}
+          PRIMARY_VPC_CIDR: ${{ env.VPC_CIDR_MK8S }}
+          PROJECT_PREFIX_INPUT: ${{ env.PROJECT_PREFIX }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import ipaddress
+          import os
+          import re
+          import sys
+
+          namespace = os.environ["PRIMARY_XC_NAMESPACE"].strip()
+          cidr = os.environ["PRIMARY_VPC_CIDR"].strip()
+          project_prefix = os.environ["PROJECT_PREFIX_INPUT"].strip()
+          output_path = os.environ["GITHUB_OUTPUT"]
+
+          if not namespace.endswith("-a"):
+              print("::error::The primary XC namespace must end with '-a' so the second branch namespace can be derived automatically for this lab.")
+              sys.exit(1)
+
+          second_namespace = f"{namespace[:-2]}-b"
+
+          network = ipaddress.ip_network(cidr, strict=False)
+          if network.version != 4 or network.prefixlen != 16:
+              print("::error::The primary branch VPC CIDR must be an IPv4 /16 network so the second branch CIDR can be derived automatically.")
+              sys.exit(1)
+
+          octets = str(network.network_address).split(".")
+          second_octet = int(octets[1]) + 1
+          if second_octet > 254:
+              print("::error::Unable to derive the second branch VPC CIDR because the second octet would exceed 254.")
+              sys.exit(1)
+
+          second_cidr = f"{octets[0]}.{second_octet}.0.0/16"
+
+          raw = f"{project_prefix}-{second_namespace}"
+          workspace_prefix = re.sub(r"[^a-z0-9-]+", "-", raw.lower())
+          workspace_prefix = re.sub(r"-+", "-", workspace_prefix).strip("-")
+          if not workspace_prefix:
+              workspace_prefix = "xcawsedgedemo-branch-b"
+
+          with open(output_path, "a", encoding="utf-8") as fh:
+              fh.write(f"second_xc_namespace={second_namespace}\n")
+              fh.write(f"second_vpc_cidr={second_cidr}\n")
+              fh.write(f"second_workspace_prefix={workspace_prefix}\n")
+              fh.write(f"second_prerequisites_workspace={workspace_prefix}-prerequisites\n")
+              fh.write(f"second_module1_workspace={workspace_prefix}-module-1\n")
+          PY
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+
+      - name: Validate XC API client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -clcerts \
+            -legacy \
+            -nokeys \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-cert.pem"
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -legacy \
+            -nocerts \
+            -nodes \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-key.pem"
+          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
+          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
+            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
+            exit 1
+          fi
+
+      - name: Wait for primary App Stack site readiness
+        shell: bash
+        env:
+          PRIMARY_APP_STACK_NAME: ${{ steps.primary_state.outputs.app_stack_name }}
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${PRIMARY_APP_STACK_NAME}"
+          attempts=60
+          sleep_seconds=20
+          response_file="$RUNNER_TEMP/primary-site-status.json"
+
+          for attempt in $(seq 1 "$attempts"); do
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$site_endpoint" || true)"
+
+            if [[ "$http_code" == "200" ]]; then
+              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              case "$site_state" in
+                ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
+                  exit 0
+                  ;;
+                FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
+                  echo "::error::Primary App Stack site is not healthy. Site state=${site_state}."
+                  cat "$response_file"
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "Primary App Stack site is not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for the primary App Stack site to become ready. Run deploy-aws-module-1.yml successfully before creating the second branch."
+          [[ -s "$response_file" ]] && cat "$response_file"
+          exit 1
+
+  second_branch_prerequisites:
+    name: Apply second branch prerequisites
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: validate_primary_branch
+    outputs:
+      app_stack_name: ${{ steps.collect.outputs.app_stack_name }}
+      mk8s_cluster_name: ${{ steps.collect.outputs.mk8s_cluster_name }}
+      xc_namespace: ${{ steps.collect.outputs.xc_namespace }}
+      appstack_private_ip: ${{ steps.collect.outputs.appstack_private_ip }}
+      kiosk_address: ${{ steps.collect.outputs.kiosk_address }}
+      kiosk_user: ${{ steps.collect.outputs.kiosk_user }}
+      workspace_prefix: ${{ needs.validate_primary_branch.outputs.second_workspace_prefix }}
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ needs.validate_primary_branch.outputs.second_xc_namespace }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_vpc_cidr: ${{ needs.validate_primary_branch.outputs.second_vpc_cidr }}
+      TF_VAR_existing_mk8s_cluster_name: ""
+      TF_VAR_windows_admin_password: ${{ vars.PASSWORD_VM_WINDOWS }}
+      TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
+      TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Validate XC API client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -clcerts \
+            -legacy \
+            -nokeys \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-cert.pem"
+          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
+          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
+            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
+            exit 1
+          fi
+
+      - name: Terraform init namespace probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/namespace-probe init
+
+      - name: Detect second branch XC namespace state
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_log="$RUNNER_TEMP/namespace-probe.log"
+          if terraform -chdir=aws-mk8s-vk8s/namespace-probe plan \
+            -input=false \
+            -no-color \
+            >"$probe_log" 2>&1
+          then
+            echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+          elif grep -Eiq 'status code 404|object not found|not found|does not exist' "$probe_log"
+          then
+            echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+          else
+            cat "$probe_log"
+            echo "::error::Unable to determine the second branch XC namespace state from provider probe."
+            exit 1
+          fi
+
+      - name: Terraform init second branch prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/second-branch-prerequisites.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${{ needs.validate_primary_branch.outputs.second_prerequisites_workspace }}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/prerequisites init \
+            -backend-config="$RUNNER_TEMP/second-branch-prerequisites.backend.hcl"
+
+      - name: Terraform apply second branch prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve
+
+      - name: Collect second branch prerequisite outputs
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "app_stack_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw app_stack_name)" >> "$GITHUB_OUTPUT"
+          echo "mk8s_cluster_name=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw mk8s_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "xc_namespace=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw xc_namespace)" >> "$GITHUB_OUTPUT"
+          echo "appstack_private_ip=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw appstack_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "kiosk_address=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw kiosk_address)" >> "$GITHUB_OUTPUT"
+          echo "kiosk_user=$(terraform -chdir=aws-mk8s-vk8s/prerequisites output -raw kiosk_user)" >> "$GITHUB_OUTPUT"
+
+  second_branch_module_1:
+    name: Apply second branch module 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs:
+      - validate_primary_branch
+      - second_branch_prerequisites
+    env:
+      VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
+      TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
+      TF_VAR_xc_namespace: ${{ needs.second_branch_prerequisites.outputs.xc_namespace }}
+      TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
+      TF_VAR_app_stack_name: ${{ needs.second_branch_prerequisites.outputs.app_stack_name }}
+      RECOMMENDATIONS_ORIGIN_DNS: ${{ vars.RECOMMENDATIONS_ORIGIN_DNS }}
+      RECOMMENDATIONS_ORIGIN_PORT: ${{ vars.RECOMMENDATIONS_ORIGIN_PORT }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Restore second branch workspace names
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "MODULE1_WORKSPACE=${{ needs.validate_primary_branch.outputs.second_module1_workspace }}" >> "$GITHUB_ENV"
+
+      - name: Normalize recommendations origin settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin_dns="${RECOMMENDATIONS_ORIGIN_DNS:-recommendations.buytime.sr.f5-cloud-demo.com}"
+          origin_port="${RECOMMENDATIONS_ORIGIN_PORT:-443}"
+          echo "RECOMMENDATIONS_ORIGIN_DNS=${origin_dns}" >> "$GITHUB_ENV"
+          echo "RECOMMENDATIONS_ORIGIN_PORT=${origin_port}" >> "$GITHUB_ENV"
+          echo "TF_VAR_recommendations_origin_dns=${origin_dns}" >> "$GITHUB_ENV"
+          echo "TF_VAR_recommendations_origin_port=${origin_port}" >> "$GITHUB_ENV"
+
+      - name: Decode XC API credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ secrets.XC_API_P12_FILE }}' | base64 --decode > "$RUNNER_TEMP/xc-api-creds.p12"
+          echo "TF_VAR_xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" >> "$GITHUB_ENV"
+
+      - name: Validate XC API client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -clcerts \
+            -legacy \
+            -nokeys \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-cert.pem"
+          openssl pkcs12 \
+            -in "$RUNNER_TEMP/xc-api-creds.p12" \
+            -legacy \
+            -nocerts \
+            -nodes \
+            -passin env:VES_P12_PASSWORD \
+            -out "$RUNNER_TEMP/xc-api-key.pem"
+          end_date="$(openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -noout -enddate | cut -d= -f2-)"
+          if ! openssl x509 -in "$RUNNER_TEMP/xc-api-cert.pem" -checkend 0 -noout; then
+            echo "::error::XC API client certificate is expired. notAfter=${end_date}. Rotate the certificate in F5 XC and update secrets XC_API_P12_FILE and XC_P12_PASSWORD."
+            exit 1
+          fi
+
+      - name: Wait for second branch App Stack site readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          site_name='${{ needs.second_branch_prerequisites.outputs.app_stack_name }}'
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}"
+          attempts=120
+          sleep_seconds=30
+          response_file="$RUNNER_TEMP/second-branch-site-status.json"
+
+          for attempt in $(seq 1 "$attempts"); do
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$site_endpoint" || true)"
+
+            if [[ "$http_code" == "200" ]]; then
+              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              case "$site_state" in
+                ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
+                  exit 0
+                  ;;
+                FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
+                  echo "::error::Second branch App Stack site entered a terminal state: ${site_state}."
+                  cat "$response_file"
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "Second branch App Stack site not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for the second branch App Stack site to become ready."
+          [[ -s "$response_file" ]] && cat "$response_file"
+          exit 1
+
+      - name: Terraform init kubeconfig helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig init
+
+      - name: Generate second branch site kubeconfig
+        id: kubeconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix_part="$(printf '%s' "$PROJECT_PREFIX" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | cut -c1-12)"
+          prefix_part="${prefix_part#-}"
+          prefix_part="${prefix_part%-}"
+          if [[ -z "$prefix_part" ]]; then
+            prefix_part="xcaws"
+          fi
+          run_suffix="${GITHUB_RUN_ID:(-8)}"
+          credential_name="${prefix_part}-${run_suffix}-b2cfg"
+          credential_name="${credential_name#-}"
+          credential_name="${credential_name%-}"
+          candidates=()
+          if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
+            candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
+          fi
+          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+
+          selected_role=""
+          for role in "${candidates[@]}"; do
+            [[ -z "$role" ]] && continue
+            if [[ " ${tried_roles:-} " == *" $role "* ]]; then
+              continue
+            fi
+            tried_roles="${tried_roles:-} $role"
+
+            apply_log="$RUNNER_TEMP/second-branch-kubeconfig-apply-${role}.log"
+            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+              -var="project_prefix=${PROJECT_PREFIX}" \
+              -var="site_name=${{ needs.second_branch_prerequisites.outputs.app_stack_name }}" \
+              -var="xc_namespace=${{ needs.second_branch_prerequisites.outputs.xc_namespace }}" \
+              -var="service_credential_role=${role}" \
+              -var="credential_name=${credential_name}" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              >"$apply_log" 2>&1
+            then
+              selected_role="$role"
+              break
+            fi
+
+            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              cat "$apply_log"
+              exit 1
+            fi
+          done
+
+          if [[ -z "$selected_role" ]]; then
+            echo "::error::Unable to create the second branch kubeconfig credential with any known role. Set repository variable XC_SERVICE_CREDENTIAL_ROLE to a valid role for this tenant."
+            exit 1
+          fi
+
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig output -raw kubeconfig_content > "$RUNNER_TEMP/mk8s-kubeconfig.yaml"
+          echo "credential_name=${credential_name}" >> "$GITHUB_OUTPUT"
+          echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
+          echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for second branch mK8s API readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          attempts=80
+          sleep_seconds=15
+          cluster_info_log="$RUNNER_TEMP/mk8s-cluster-info.log"
+          namespace_probe_log="$RUNNER_TEMP/mk8s-namespace-probe.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name >"$namespace_probe_log" 2>&1; then
+              cat "$cluster_info_log"
+              cat "$namespace_probe_log"
+              exit 0
+            fi
+
+            echo "Second branch mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            if [[ -s "$cluster_info_log" ]]; then
+              tail -n 5 "$cluster_info_log"
+            fi
+            if [[ -s "$namespace_probe_log" ]]; then
+              tail -n 5 "$namespace_probe_log"
+            fi
+            sleep "$sleep_seconds"
+          done
+
+          echo "::error::Timed out waiting for the second branch mK8s API server to become ready."
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name || true
+          exit 1
+
+      - name: Terraform init second branch module 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/second-branch-module-1.backend.hcl" <<EOF
+          organization = "${{ secrets.TF_CLOUD_ORGANIZATION }}"
+          workspaces {
+            name = "${MODULE1_WORKSPACE}"
+          }
+          EOF
+          terraform -chdir=aws-mk8s-vk8s/module-1 init \
+            -backend-config="$RUNNER_TEMP/second-branch-module-1.backend.hcl"
+
+      - name: Terraform apply second branch module 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          apply_log="$RUNNER_TEMP/second-branch-module-1-apply.log"
+          attempts=4
+          sleep_seconds=30
+
+          for attempt in $(seq 1 "$attempts"); do
+            if terraform -chdir=aws-mk8s-vk8s/module-1 apply -auto-approve \
+              -var="project_prefix=${PROJECT_PREFIX}" \
+              -var="xc_namespace=${{ needs.second_branch_prerequisites.outputs.xc_namespace }}" \
+              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+              -var="kubeconfig_path=${{ steps.kubeconfig.outputs.kubeconfig_path }}" \
+              -var="app_stack_name=${{ needs.second_branch_prerequisites.outputs.app_stack_name }}" \
+              >"$apply_log" 2>&1
+            then
+              cat "$apply_log"
+              exit 0
+            fi
+
+            cat "$apply_log"
+            if grep -Fq "the server is currently unable to handle the request" "$apply_log" && [[ "$attempt" -lt "$attempts" ]]; then
+              echo "Transient second branch mK8s API error during module 1 apply (attempt ${attempt}/${attempts}); retrying in ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+              continue
+            fi
+
+            exit 1
+          done
+
+      - name: Collect second branch module 1 outputs
+        id: module_outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "kiosk_domain=$(terraform -chdir=aws-mk8s-vk8s/module-1 output -raw kiosk_domain)" >> "$GITHUB_OUTPUT"
+          echo "recommendations_domain=$(terraform -chdir=aws-mk8s-vk8s/module-1 output -raw recommendations_domain)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate second branch mK8s workloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace='${{ needs.second_branch_prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+
+          kubectl --kubeconfig "$kubeconfig_path" get namespace "$namespace"
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get deployments,svc -o wide
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" rollout status deployment/mysql-deployment --timeout=10m
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" rollout status deployment/wordpress-deployment --timeout=10m
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" rollout status deployment/kiosk-deployment --timeout=10m
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get pods -o wide
+
+      - name: Configure second branch BuyTime recommendations plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace='${{ needs.second_branch_prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          recommendations_domain='${{ steps.module_outputs.outputs.recommendations_domain }}'
+          wordpress_pod="$(kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get pod -l app=wordpress -o jsonpath='{.items[0].metadata.name}')"
+          php_script="$RUNNER_TEMP/configure-buytime-recommendations.php"
+
+          if [[ -z "$wordpress_pod" ]]; then
+            echo "::error::Unable to locate the second branch wordpress pod to configure the BuyTime plugin."
+            exit 1
+          fi
+
+          cat > "$php_script" <<PHP
+          <?php
+          require '/var/www/html/wp-load.php';
+
+          \$domain = '${recommendations_domain}';
+          if (\$domain === '') {
+              fwrite(STDERR, "Missing recommendations domain.\n");
+              exit(1);
+          }
+
+          \$options = get_option('recommendations_server');
+          if (!is_array(\$options)) {
+              \$options = array();
+          }
+
+          \$options['recommendation_server_url'] = \$domain;
+          update_option('recommendations_server', \$options, true);
+
+          \$current = get_option('recommendations_server');
+          if (!is_array(\$current) || (\$current['recommendation_server_url'] ?? '') !== \$domain) {
+              fwrite(STDERR, "Failed to persist the recommendations server URL.\n");
+              exit(1);
+          }
+
+          fwrite(STDOUT, "Configured recommendations_server_url=\$domain\n");
+          PHP
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- php -v >/dev/null
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec -i "$wordpress_pod" -- sh -c 'cat > /tmp/configure-buytime-recommendations.php' < "$php_script"
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- php /tmp/configure-buytime-recommendations.php
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- rm -f /tmp/configure-buytime-recommendations.php || true
+
+      - name: Smoke test second branch kiosk application
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace='${{ needs.second_branch_prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          kiosk_domain='${{ steps.module_outputs.outputs.kiosk_domain }}'
+          forward_log="$RUNNER_TEMP/kiosk-port-forward.log"
+          home_body="$RUNNER_TEMP/kiosk-home.html"
+          admin_headers="$RUNNER_TEMP/kiosk-admin.headers"
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" port-forward service/kiosk-service 18080:8080 >"$forward_log" 2>&1 &
+          forward_pid=$!
+          cleanup() {
+            kill "$forward_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 20); do
+            if curl --silent --show-error --fail -H "Host: $kiosk_domain" http://127.0.0.1:18080/ >"$home_body" 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+
+          if ! grep -Eiq '<title>BuyTime</title>|BuyTime|WooCommerce|WordPress' "$home_body"; then
+            echo "::error::Second branch kiosk home page smoke test did not return expected content."
+            cat "$home_body"
+            exit 1
+          fi
+
+          curl --silent --show-error -I -H "Host: $kiosk_domain" http://127.0.0.1:18080/wp-admin/ >"$admin_headers"
+          if ! grep -Eq '^HTTP/[0-9.]+ (200|301|302)' "$admin_headers"; then
+            echo "::error::Second branch WordPress admin endpoint did not return an expected status."
+            cat "$admin_headers"
+            exit 1
+          fi
+
+      - name: Verify recommendations origin reachability
+        shell: bash
+        run: |
+          set -euo pipefail
+          origin_dns="${RECOMMENDATIONS_ORIGIN_DNS:-recommendations.buytime.sr.f5-cloud-demo.com}"
+          origin_port="${RECOMMENDATIONS_ORIGIN_PORT:-443}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --max-time 20 \
+            "https://${origin_dns}:${origin_port}/" || true)"
+
+          if [[ "$http_code" == "000" || -z "$http_code" ]]; then
+            echo "::error::Unable to reach the recommendations origin ${origin_dns}:${origin_port}."
+            exit 1
+          fi
+
+          echo "Recommendations origin responded with HTTP ${http_code}."
+
+      - name: Write second branch deployment summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Second Branch Deploy Summary"
+            echo
+            echo "- Primary branch namespace: ${{ needs.validate_primary_branch.outputs.primary_xc_namespace }}"
+            echo "- Primary App Stack site: ${{ needs.validate_primary_branch.outputs.primary_app_stack_name }}"
+            echo "- Second branch namespace: ${{ needs.second_branch_prerequisites.outputs.xc_namespace }}"
+            echo "- Second branch VPC CIDR: ${{ needs.validate_primary_branch.outputs.second_vpc_cidr }}"
+            echo "- Second App Stack site: ${{ needs.second_branch_prerequisites.outputs.app_stack_name }}"
+            echo "- Second mK8s cluster: ${{ needs.second_branch_prerequisites.outputs.mk8s_cluster_name }}"
+            echo "- Second App Stack private IP: ${{ needs.second_branch_prerequisites.outputs.appstack_private_ip }}"
+            echo "- Second Kiosk VM public IP: ${{ needs.second_branch_prerequisites.outputs.kiosk_address }}"
+            echo "- Second Kiosk VM user: ${{ needs.second_branch_prerequisites.outputs.kiosk_user }}"
+            echo "- Second kiosk domain: ${{ steps.module_outputs.outputs.kiosk_domain }}"
+            echo "- Second recommendations domain: ${{ steps.module_outputs.outputs.recommendations_domain }}"
+            echo
+            echo "### Deductions used by this workflow"
+            echo
+            echo "- The second branch namespace is derived automatically by replacing the primary namespace suffix '-a' with '-b'."
+            echo "- The second branch VPC CIDR is derived automatically by incrementing the second octet of VPC_CIDR_MK8S and keeping a /16 mask."
+            echo
+            echo "### Notes"
+            echo
+            echo "- This workflow requires the primary branch created by deploy-aws-module-1.yml to already exist and be healthy."
+            echo "- This workflow reuses aws-mk8s-vk8s/namespace-probe, aws-mk8s-vk8s/prerequisites, aws-mk8s-vk8s/kubeconfig, and aws-mk8s-vk8s/module-1 without modifying them."
+            echo "- A new Windows kiosk VM is created for the second branch because the shared prerequisites module includes it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Revoke temporary kubeconfig credential
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          terraform -chdir=aws-mk8s-vk8s/kubeconfig destroy -auto-approve \
+            -var="project_prefix=${PROJECT_PREFIX}" \
+            -var="site_name=${{ needs.second_branch_prerequisites.outputs.app_stack_name }}" \
+            -var="xc_namespace=${{ needs.second_branch_prerequisites.outputs.xc_namespace }}" \
+            -var="service_credential_role=${{ steps.kubeconfig.outputs.service_credential_role }}" \
+            -var="credential_name=${{ steps.kubeconfig.outputs.credential_name }}" \
+            -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+            -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
