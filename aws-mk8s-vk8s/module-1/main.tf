@@ -2,11 +2,23 @@ locals {
   base_name              = join("-", compact([var.project_prefix, var.xc_namespace]))
   kiosk_domain           = "kiosk.${var.xc_namespace}.buytime.internal"
   recommendations_domain = "recommendations.${var.xc_namespace}.buytime.internal"
-  kiosk_manifest         = templatefile("${path.module}/templates/appstack-mk8s-kiosk.yaml.tftpl", {
+  kiosk_manifest = templatefile("${path.module}/templates/appstack-mk8s-kiosk.yaml.tftpl", {
     namespace    = var.xc_namespace
     kiosk_domain = local.kiosk_domain
   })
   kiosk_objects = split("\n---\n", local.kiosk_manifest)
+}
+
+resource "volterra_namespace" "app_namespace" {
+  count = var.create_xc_namespace ? 1 : 0
+
+  name = var.xc_namespace
+}
+
+data "volterra_namespace" "app_namespace_existing" {
+  count = var.create_xc_namespace ? 0 : 1
+
+  name = var.xc_namespace
 }
 
 resource "kubectl_manifest" "kiosk" {
@@ -56,6 +68,8 @@ resource "volterra_http_loadbalancer" "kiosk" {
   disable_trust_client_ip_headers  = true
   user_id_client_ip                = true
   disable_waf                      = true
+
+  depends_on = [volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
 }
 
 resource "volterra_origin_pool" "kiosk" {
@@ -82,7 +96,7 @@ resource "volterra_origin_pool" "kiosk" {
   endpoint_selection     = "LOCAL_PREFERRED"
   loadbalancer_algorithm = "LB_OVERRIDE"
 
-  depends_on = [kubectl_manifest.kiosk]
+  depends_on = [kubectl_manifest.kiosk, volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
 }
 
 resource "volterra_http_loadbalancer" "recommendations" {
@@ -127,6 +141,8 @@ resource "volterra_http_loadbalancer" "recommendations" {
   disable_trust_client_ip_headers  = true
   user_id_client_ip                = true
   disable_waf                      = true
+
+  depends_on = [volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
 }
 
 resource "volterra_origin_pool" "recommendations" {
@@ -148,6 +164,8 @@ resource "volterra_origin_pool" "recommendations" {
   port                   = var.recommendations_origin_port
   endpoint_selection     = "LOCAL_PREFERRED"
   loadbalancer_algorithm = "LB_OVERRIDE"
+
+  depends_on = [volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
 }
 
 output "kiosk_domain" {

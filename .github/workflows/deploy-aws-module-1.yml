@@ -45,6 +45,7 @@ jobs:
       app_stack_name: ${{ steps.collect.outputs.app_stack_name }}
       mk8s_cluster_name: ${{ steps.collect.outputs.mk8s_cluster_name }}
       xc_namespace: ${{ steps.collect.outputs.xc_namespace }}
+      create_xc_namespace: ${{ steps.namespace_state.outputs.create_xc_namespace }}
       appstack_private_ip: ${{ steps.collect.outputs.appstack_private_ip }}
       kiosk_address: ${{ steps.collect.outputs.kiosk_address }}
       kiosk_user: ${{ steps.collect.outputs.kiosk_user }}
@@ -143,6 +144,7 @@ jobs:
           fi
 
       - name: Detect XC namespace state
+        id: namespace_state
         shell: bash
         run: |
           set -euo pipefail
@@ -162,10 +164,12 @@ jobs:
           case "$http_code" in
             200)
               echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              echo "create_xc_namespace=false" >> "$GITHUB_OUTPUT"
               echo "Namespace ${XC_NAMESPACE} already exists in XC; prerequisites will reuse it."
               ;;
             404)
               echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              echo "create_xc_namespace=true" >> "$GITHUB_OUTPUT"
               echo "Namespace ${XC_NAMESPACE} does not exist in XC yet; prerequisites will create it."
               ;;
             *)
@@ -218,6 +222,7 @@ jobs:
       VES_P12_PASSWORD: ${{ secrets.XC_P12_PASSWORD }}
       TF_VAR_project_prefix: ${{ vars.PROJECT_PREFIX }}
       TF_VAR_xc_namespace: ${{ needs.prerequisites.outputs.xc_namespace }}
+      TF_VAR_create_xc_namespace: ${{ needs.prerequisites.outputs.create_xc_namespace }}
       TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
       TF_VAR_app_stack_name: ${{ needs.prerequisites.outputs.app_stack_name }}
       RECOMMENDATIONS_ORIGIN_DNS: ${{ vars.RECOMMENDATIONS_ORIGIN_DNS }}
@@ -286,7 +291,7 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for XC application namespace availability
+      - name: Check XC application namespace availability
         shell: bash
         run: |
           set -euo pipefail
@@ -330,11 +335,11 @@ jobs:
             fi
           done
 
-          echo "::error::Timed out waiting for XC namespace ${namespace} to become available."
+          echo "::warning::XC namespace ${namespace} is still not visible after ${attempts} attempts; module-1 Terraform will create or reuse it during apply."
           if [[ -s "$RUNNER_TEMP/module-1-namespace.json" ]]; then
             cat "$RUNNER_TEMP/module-1-namespace.json"
           fi
-          exit 1
+          exit 0
 
       - name: Wait for XC App Stack site readiness
         shell: bash
