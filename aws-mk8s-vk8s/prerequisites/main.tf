@@ -8,8 +8,6 @@ locals {
   app_stack_location          = "${local.base_name}-app-stack"
   effective_namespace         = trimspace(var.xc_namespace)
   effective_mk8s_cluster_name = trimspace(var.existing_mk8s_cluster_name) != "" ? trimspace(var.existing_mk8s_cluster_name) : local.k8s_cluster_name
-  kiosk_domain                = format("kiosk.%s.buytime.internal", local.effective_namespace)
-  recommendations_domain      = format("recommendations.%s.buytime.internal", local.effective_namespace)
   windows_admin_password_ps   = replace(var.windows_admin_password, "'", "''")
   windows_user_data = join("\n", concat([
     "<powershell>",
@@ -17,12 +15,7 @@ locals {
     ], trimspace(var.windows_admin_password) != "" ? [
     format("$securePassword = ConvertTo-SecureString '%s' -AsPlainText -Force", local.windows_admin_password_ps),
     "Set-LocalUser -Name \"Administrator\" -Password $securePassword",
-    ] : [], [
-    "$hostsPath = 'C:\\Windows\\System32\\drivers\\etc\\hosts'",
-    format("Add-Content -Path $hostsPath -Value '%s %s'", data.aws_network_interface.appstack.private_ip, local.kiosk_domain),
-    format("Add-Content -Path $hostsPath -Value '%s %s'", data.aws_network_interface.appstack.private_ip, local.recommendations_domain),
-    "</powershell>",
-  ]))
+  ] : [], ["</powershell>"]))
 }
 
 resource "volterra_namespace" "app_namespace" {
@@ -174,45 +167,6 @@ resource "volterra_tf_params_action" "appstack_apply" {
   depends_on = [volterra_aws_vpc_site.appstack]
 }
 
-resource "time_sleep" "appstack_instance_discovery_wait" {
-  create_duration = "2m"
-
-  depends_on = [volterra_tf_params_action.appstack_apply]
-}
-
-data "aws_instance" "appstack" {
-  filter {
-    name   = "subnet-id"
-    values = [aws_subnet.subnet_a.id]
-  }
-
-  filter {
-    name   = "instance-state-name"
-    values = ["pending", "running", "stopping", "stopped"]
-  }
-
-  filter {
-    name   = "instance-type"
-    values = ["t3.xlarge"]
-  }
-
-  depends_on = [time_sleep.appstack_instance_discovery_wait]
-}
-
-data "aws_network_interface" "appstack" {
-  filter {
-    name   = "attachment.instance-id"
-    values = [data.aws_instance.appstack.id]
-  }
-
-  filter {
-    name   = "subnet-id"
-    values = [aws_subnet.subnet_a.id]
-  }
-
-  depends_on = [volterra_tf_params_action.appstack_apply]
-}
-
 resource "tls_private_key" "kiosk_key_pair" {
   algorithm = "RSA"
   rsa_bits  = 4096
@@ -301,8 +255,8 @@ output "xc_namespace" {
 }
 
 output "appstack_private_ip" {
-  description = "Private IP of the App Stack instance."
-  value       = data.aws_network_interface.appstack.private_ip
+  description = "Private IP of the App Stack instance when discovered during prerequisites."
+  value       = ""
 }
 
 output "aws_vpc_id" {
