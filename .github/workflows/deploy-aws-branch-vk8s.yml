@@ -9,6 +9,7 @@ permissions:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  TERRAFORM_VERSION: "1.11.4"
   PROJECT_PREFIX: ${{ vars.PROJECT_PREFIX }}
   XC_NAMESPACE: ${{ vars.XC_NAMESPACE }}
   XC_SERVICE_CREDENTIAL_ROLE: ${{ vars.XC_SERVICE_CREDENTIAL_ROLE }}
@@ -32,6 +33,7 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
       - name: Set up kubectl
