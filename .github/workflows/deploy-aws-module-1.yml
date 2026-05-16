@@ -362,14 +362,24 @@ jobs:
             if [[ "$http_code" == "200" ]]; then
               site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
               operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
-              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty), .spec?.site_state, .replace_form?.spec?.site_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
+              apply_state="$(jq -r '[.status[]?.deployment?.apply_status?.apply_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              rollback_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_rollback_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              upgrade_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)", .status[]?.site_state, .spec?.site_state, .replace_form?.spec?.site_state, .status[]?.deployment?.apply_status?.apply_state, .status[]?.deployment?.apply_status?.tf_rollback_state, .status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
               if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
                 status_summary="no detailed status"
               fi
 
               echo "XC site state: ${site_state:-unknown}"
               echo "XC site operational status: ${operational_status:-unknown}"
+              echo "XC site apply state: ${apply_state:-unknown} | rollback: ${rollback_state:-unknown} | upgrade: ${upgrade_state:-unknown}"
               echo "XC site details: ${status_summary}"
+
+              if [[ -n "$apply_state" && ( "$apply_state" == *"ERRORED" || "$apply_state" == *"FAILED" ) ]]; then
+                echo "::error::XC site deployment entered a terminal apply state: ${apply_state}."
+                [[ -s "$response_file" ]] && cat "$response_file"
+                exit 1
+              fi
 
               case "$site_state" in
                 ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
