@@ -95,6 +95,14 @@ resource "volterra_k8s_cluster" "mk8s" {
   }
 }
 
+resource "time_sleep" "mk8s_registration_wait" {
+  count = trimspace(var.existing_mk8s_cluster_name) == "" ? 1 : 0
+
+  create_duration = "180s"
+
+  depends_on = [volterra_k8s_cluster.mk8s]
+}
+
 resource "volterra_aws_vpc_site" "appstack" {
   name       = local.aws_site_name
   namespace  = "system"
@@ -145,6 +153,7 @@ resource "volterra_aws_vpc_site" "appstack" {
   depends_on = [
     volterra_cloud_credentials.aws_cred,
     volterra_k8s_cluster.mk8s,
+    time_sleep.mk8s_registration_wait,
     aws_vpc.vpc,
     aws_subnet.subnet_a,
   ]
