@@ -336,7 +336,7 @@ jobs:
           fi
           exit 1
 
-      - name: Check XC App Stack site status
+      - name: Wait for XC App Stack site readiness
         shell: bash
         run: |
           set -euo pipefail
@@ -346,40 +346,57 @@ jobs:
           site_name='${{ needs.prerequisites.outputs.app_stack_name }}'
           site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}?response_format=GET_RSP_FORMAT_STATUS"
           response_file="$RUNNER_TEMP/site-status.json"
+          attempts=60
+          sleep_seconds=30
 
-          http_code="$(curl \
-            --silent \
-            --show-error \
-            --output "$response_file" \
-            --write-out '%{http_code}' \
-            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-            --key "$RUNNER_TEMP/xc-api-key.pem" \
-            "$site_endpoint" || true)"
+          for attempt in $(seq 1 "$attempts"); do
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$site_endpoint" || true)"
 
-          if [[ "$http_code" != "200" ]]; then
-            echo "Unable to read XC site status before kubeconfig generation (HTTP ${http_code:-curl-error}). Proceeding to mK8s readiness checks."
-            [[ -s "$response_file" ]] && cat "$response_file"
-            exit 0
-          fi
+            if [[ "$http_code" == "200" ]]; then
+              site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty), .spec?.site_state, .replace_form?.spec?.site_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
+              if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
+                status_summary="no detailed status"
+              fi
 
-          site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
-          operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
-          status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty), .spec?.site_state, .replace_form?.spec?.site_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
-          if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
-            status_summary="no detailed status"
-          fi
+              echo "XC site state: ${site_state:-unknown}"
+              echo "XC site operational status: ${operational_status:-unknown}"
+              echo "XC site details: ${status_summary}"
 
-          echo "XC site state: ${site_state:-unknown}"
-          echo "XC site operational status: ${operational_status:-unknown}"
-          echo "XC site details: ${status_summary}"
+              case "$site_state" in
+                ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
+                  if [[ -z "$operational_status" || "$operational_status" == "True" ]]; then
+                    exit 0
+                  fi
+                  ;;
+                FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
+                  echo "::error::XC site entered a terminal state: ${site_state}."
+                  cat "$response_file"
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "Unable to read XC site status yet (attempt ${attempt}/${attempts}, HTTP ${http_code:-curl-error})."
+              [[ -s "$response_file" ]] && cat "$response_file"
+            fi
 
-          case "$site_state" in
-            FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
-              echo "::error::XC site entered a terminal state: ${site_state}."
-              cat "$response_file"
-              exit 1
-              ;;
-          esac
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              echo "XC App Stack site not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for the XC App Stack site to become ready."
+          [[ -s "$response_file" ]] && cat "$response_file"
+          exit 1
 
       - name: Terraform init kubeconfig helper
         shell: bash
