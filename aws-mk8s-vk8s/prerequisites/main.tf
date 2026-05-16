@@ -181,13 +181,19 @@ resource "time_sleep" "appstack_instance_discovery_wait" {
 }
 
 data "aws_instance" "appstack" {
-  instance_tags = {
-    "ves-io-site-name" = local.aws_site_name
-  }
-
   filter {
     name   = "subnet-id"
     values = [aws_subnet.subnet_a.id]
+  }
+
+  filter {
+    name   = "instance-state-name"
+    values = ["pending", "running", "stopping", "stopped"]
+  }
+
+  filter {
+    name   = "instance-type"
+    values = ["t3.xlarge"]
   }
 
   depends_on = [time_sleep.appstack_instance_discovery_wait]
