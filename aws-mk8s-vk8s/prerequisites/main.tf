@@ -174,6 +174,12 @@ resource "volterra_tf_params_action" "appstack_apply" {
   depends_on = [volterra_aws_vpc_site.appstack]
 }
 
+resource "time_sleep" "appstack_instance_discovery_wait" {
+  create_duration = "2m"
+
+  depends_on = [volterra_tf_params_action.appstack_apply]
+}
+
 data "aws_instance" "appstack" {
   instance_tags = {
     "ves-io-site-name" = local.aws_site_name
@@ -184,7 +190,7 @@ data "aws_instance" "appstack" {
     values = [aws_subnet.subnet_a.id]
   }
 
-  depends_on = [volterra_tf_params_action.appstack_apply]
+  depends_on = [time_sleep.appstack_instance_discovery_wait]
 }
 
 data "aws_network_interface" "appstack" {
