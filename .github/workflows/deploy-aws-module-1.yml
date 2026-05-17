@@ -194,6 +194,23 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/prerequisites init \
             -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
 
+      - name: Pre-create XC managed k8s cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${TF_VAR_existing_mk8s_cluster_name:-}" ]]; then
+            echo "Reusing existing XC managed k8s cluster ${TF_VAR_existing_mk8s_cluster_name}; skipping pre-create step."
+            exit 0
+          fi
+
+          apply_log="$RUNNER_TEMP/prerequisites-mk8s-apply.log"
+          terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve -target=volterra_k8s_cluster.mk8s >"$apply_log" 2>&1
+          cat "$apply_log"
+
+          echo "Waiting 180 seconds for XC to propagate the managed k8s cluster object before creating the App Stack site."
+          sleep 180
+
       - name: Terraform apply prerequisites
         shell: bash
         run: |
