@@ -729,12 +729,19 @@ jobs:
           kubeconfig_path="${{ steps.kubeconfig.outputs.kubeconfig_path }}"
           attempts=80
           sleep_seconds=15
+          request_timeout=20s
           cluster_info_log="$RUNNER_TEMP/mk8s-cluster-info.log"
           namespace_probe_log="$RUNNER_TEMP/mk8s-namespace-probe.log"
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          site_name='${{ needs.prerequisites.outputs.app_stack_name }}'
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}?response_format=GET_RSP_FORMAT_STATUS"
+          site_response_file="$RUNNER_TEMP/mk8s-site-status-on-timeout.json"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name >"$namespace_probe_log" 2>&1; then
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" cluster-info >"$cluster_info_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
               cat "$cluster_info_log"
               cat "$namespace_probe_log"
               exit 0
@@ -751,8 +758,32 @@ jobs:
           done
 
           echo "::error::Timed out waiting for the mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info || true
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace default -o name || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" cluster-info || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name || true
+
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$site_response_file" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$site_endpoint" || true)"
+
+          if [[ "$http_code" == "200" ]]; then
+            site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$site_response_file")"
+            operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$site_response_file")"
+            apply_state="$(jq -r '[.status[]?.deployment?.apply_status?.apply_state] | map(select(. != null and . != "")) | first // ""' "$site_response_file")"
+            running_state="$(jq -r '[.status[]?.ver_status?.running_state_status?.state] | map(select(. != null and . != "")) | first // ""' "$site_response_file")"
+            echo "XC site state at API timeout: ${site_state:-unknown}"
+            echo "XC site operational status at API timeout: ${operational_status:-unknown}"
+            echo "XC site apply state at API timeout: ${apply_state:-unknown}"
+            echo "XC site running state at API timeout: ${running_state:-unknown}"
+            cat "$site_response_file"
+          else
+            echo "Unable to read XC site status after mK8s API timeout (HTTP ${http_code:-curl-error})."
+            [[ -s "$site_response_file" ]] && cat "$site_response_file"
+          fi
           exit 1
 
       - name: Wait for mK8s control plane health
