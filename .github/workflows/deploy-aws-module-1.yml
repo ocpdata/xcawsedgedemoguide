@@ -258,8 +258,11 @@ jobs:
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
           mk8s_name="${TF_VAR_existing_mk8s_cluster_name:-${TF_VAR_project_prefix}-${TF_VAR_xc_namespace}-mk8s}"
+          site_name="aws-${TF_VAR_project_prefix}-${TF_VAR_xc_namespace}"
           response_file="$RUNNER_TEMP/prerequisites-mk8s-status.json"
           mk8s_endpoint="${api_root}/api/config/namespaces/system/k8s_clusters/${mk8s_name}"
+          site_response_file="$RUNNER_TEMP/prerequisites-site-config.json"
+          site_endpoint="${api_root}/api/config/namespaces/system/aws_vpc_sites/${site_name}"
 
           for attempt in $(seq 1 10); do
             if terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve >"$apply_log" 2>&1; then
@@ -275,6 +278,67 @@ jobs:
             if grep -q "InvalidKeyPair.Duplicate" "$apply_log"; then
               echo "AWS key pair ${TF_VAR_kiosk_key_pair_name} already exists; deleting it before retry."
               aws ec2 delete-key-pair --region "$AWS_REGION" --key-name "$TF_VAR_kiosk_key_pair_name" || true
+            fi
+
+            if grep -q "error creating AwsVpcSite" "$apply_log" && grep -q "Object already exists" "$apply_log"; then
+              echo "XC App Stack site ${site_name} already exists outside Terraform state; deleting it before retry."
+              http_code="$(curl \
+                --silent \
+                --show-error \
+                --output "$site_response_file" \
+                --write-out '%{http_code}' \
+                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                --key "$RUNNER_TEMP/xc-api-key.pem" \
+                "$site_endpoint" || true)"
+
+              if [[ "$http_code" != "200" && "$http_code" != "404" ]]; then
+                echo "::error::Unable to inspect existing XC App Stack site ${site_name} (HTTP ${http_code:-curl-error})."
+                cat "$site_response_file" || true
+                exit 1
+              fi
+
+              if [[ "$http_code" == "200" ]]; then
+                delete_code="$(curl \
+                  --silent \
+                  --show-error \
+                  --output "$site_response_file" \
+                  --write-out '%{http_code}' \
+                  --request DELETE \
+                  --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                  --key "$RUNNER_TEMP/xc-api-key.pem" \
+                  "$site_endpoint" || true)"
+
+                if [[ "$delete_code" != "200" && "$delete_code" != "202" && "$delete_code" != "204" && "$delete_code" != "404" ]]; then
+                  echo "::error::Unable to delete stale XC App Stack site ${site_name} (HTTP ${delete_code:-curl-error})."
+                  cat "$site_response_file" || true
+                  exit 1
+                fi
+
+                for site_attempt in $(seq 1 20); do
+                  http_code="$(curl \
+                    --silent \
+                    --show-error \
+                    --output "$site_response_file" \
+                    --write-out '%{http_code}' \
+                    --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                    --key "$RUNNER_TEMP/xc-api-key.pem" \
+                    "$site_endpoint" || true)"
+
+                  if [[ "$http_code" == "404" ]]; then
+                    echo "XC App Stack site ${site_name} has been removed and can be recreated."
+                    break
+                  fi
+
+                  if [[ "$site_attempt" -eq 20 ]]; then
+                    echo "::error::XC App Stack site ${site_name} still exists after delete attempt."
+                    cat "$site_response_file" || true
+                    exit 1
+                  fi
+
+                  echo "XC App Stack site ${site_name} still exists after delete attempt (HTTP ${http_code}); retrying in 15s (${site_attempt}/20)."
+                  sleep 15
+                done
+              fi
             fi
 
              if grep -q "non-existing k8s_cluster object" "$apply_log"; then
@@ -313,7 +377,7 @@ jobs:
               fi
             fi
 
-            if [[ "$attempt" -lt 10 ]] && grep -Eq "non-existing k8s_cluster object|error creating CloudCredentials|InvalidKeyPair.Duplicate" "$apply_log"; then
+            if [[ "$attempt" -lt 10 ]] && grep -Eq "non-existing k8s_cluster object|error creating CloudCredentials|InvalidKeyPair.Duplicate|error creating AwsVpcSite" "$apply_log"; then
               echo "Prerequisites apply hit a recoverable error (attempt ${attempt}/10); retrying in 30s"
               cat "$apply_log"
               sleep 30
