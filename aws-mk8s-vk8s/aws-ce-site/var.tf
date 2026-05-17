@@ -28,6 +28,12 @@ variable "manage_site_infrastructure" {
   description = "Whether Terraform should manage the CE AWS VPC, subnets, site object, and related site resources."
 }
 
+variable "run_site_destroy_action" {
+  type        = bool
+  default     = false
+  description = "Whether Terraform should trigger the XC site destroy action before the root itself is destroyed."
+}
+
 variable "xc_api_url" {
   type    = string
   default = "https://your_tenant_name.console.ves.volterra.io/api"

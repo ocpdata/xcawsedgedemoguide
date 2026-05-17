@@ -7,12 +7,12 @@ resource "volterra_cloud_credentials" "aws_cred" {
   name      = local.effective_cloud_credential_name
   namespace = "system"
   aws_secret_key {
-	  access_key = var.aws_access_key
-	  secret_key {
-	  	clear_secret_info {
-	  		url = "string:///${base64encode(var.aws_secret_key)}"
-	  	}
-	  }
+    access_key = var.aws_access_key
+    secret_key {
+      clear_secret_info {
+        url = "string:///${base64encode(var.aws_secret_key)}"
+      }
+    }
   }
 }
 
@@ -23,7 +23,7 @@ resource "volterra_aws_vpc_site" "site" {
   aws_region = var.aws_region
 
   labels = {
-    "location": "buytime-ce-site"
+    "location" : "buytime-ce-site"
   }
 
   aws_cred {
@@ -32,7 +32,7 @@ resource "volterra_aws_vpc_site" "site" {
   }
 
   vpc {
-	  vpc_id = element(aws_vpc.vpc.*.id, 0)
+    vpc_id = element(aws_vpc.vpc.*.id, 0)
   }
 
   direct_connect_disabled = true
@@ -45,8 +45,8 @@ resource "volterra_aws_vpc_site" "site" {
   ingress_egress_gw {
     aws_certified_hw = "aws-byol-multi-nic-voltmesh"
 
-	  az_nodes {
-      aws_az_name  = "${var.aws_region}a"
+    az_nodes {
+      aws_az_name = "${var.aws_region}a"
 
       inside_subnet {
         existing_subnet_id = element(aws_subnet.subnet_a.*.id, 0)
@@ -59,7 +59,7 @@ resource "volterra_aws_vpc_site" "site" {
       workload_subnet {
         existing_subnet_id = element(aws_subnet.subnet_c.*.id, 0)
       }
-	  }
+    }
 
     no_inside_static_routes  = true
     no_outside_static_routes = true
@@ -70,7 +70,7 @@ resource "volterra_aws_vpc_site" "site" {
 
   no_worker_nodes = true
 
-	depends_on = [
+  depends_on = [
     volterra_cloud_credentials.aws_cred,
     aws_subnet.subnet_a,
     aws_subnet.subnet_b,
@@ -87,14 +87,30 @@ resource "volterra_cloud_site_labels" "labels" {
 }
 
 resource "volterra_tf_params_action" "action_apply" {
-	count            = var.manage_site_infrastructure ? 1 : 0
-	site_name        = volterra_aws_vpc_site.site[0].name
-	site_kind        = "aws_vpc_site"
-	action           = "apply"
-	wait_for_action  = true
+  count            = var.manage_site_infrastructure ? 1 : 0
+  site_name        = volterra_aws_vpc_site.site[0].name
+  site_kind        = "aws_vpc_site"
+  action           = "apply"
+  wait_for_action  = true
   ignore_on_update = true
 
-	depends_on = [
+  depends_on = [
+    volterra_aws_vpc_site.site,
+    aws_subnet.subnet_a,
+    aws_subnet.subnet_b,
+    aws_subnet.subnet_c
+  ]
+}
+
+resource "volterra_tf_params_action" "action_destroy" {
+  count            = var.manage_site_infrastructure && var.run_site_destroy_action ? 1 : 0
+  site_name        = volterra_aws_vpc_site.site[0].name
+  site_kind        = "aws_vpc_site"
+  action           = "destroy"
+  wait_for_action  = true
+  ignore_on_update = true
+
+  depends_on = [
     volterra_aws_vpc_site.site,
     aws_subnet.subnet_a,
     aws_subnet.subnet_b,
