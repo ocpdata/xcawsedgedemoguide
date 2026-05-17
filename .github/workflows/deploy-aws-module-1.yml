@@ -198,7 +198,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve
+          apply_log="$RUNNER_TEMP/prerequisites-apply.log"
+
+          for attempt in $(seq 1 10); do
+            if terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve >"$apply_log" 2>&1; then
+              cat "$apply_log"
+              exit 0
+            fi
+
+            if grep -q "non-existing k8s_cluster object" "$apply_log" && [[ "$attempt" -lt 10 ]]; then
+              echo "mK8s object is not visible to XC App Stack creation yet (attempt ${attempt}/10); retrying prerequisites apply in 30s"
+              cat "$apply_log"
+              sleep 30
+              continue
+            fi
+
+            cat "$apply_log"
+            exit 1
+          done
 
       - name: Retry XC App Stack apply when site is terminal
         shell: bash
