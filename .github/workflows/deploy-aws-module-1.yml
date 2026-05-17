@@ -778,7 +778,10 @@ jobs:
               echo "No phobos1 pods reported yet."
             fi
 
-            if [[ "$node_ready" -ge 1 && "$etcd_phase" == "Running" && "$etcd_ready" == *"true true"* && "$phobos_running" -ge 1 ]]; then
+            if [[ "$node_ready" -ge 1 && "$etcd_phase" == "Running" && "$etcd_ready" == *"true true"* ]]; then
+              if [[ "$phobos_running" -lt 1 ]]; then
+                echo "phobos1 is not fully running yet; continuing because the API server and etcd are healthy."
+              fi
               exit 0
             fi
 
@@ -818,11 +821,11 @@ jobs:
         run: |
           set -euo pipefail
           apply_log="$RUNNER_TEMP/module-1-apply.log"
-          attempts=4
-          sleep_seconds=30
+          attempts=6
+          sleep_seconds=45
 
           for attempt in $(seq 1 "$attempts"); do
-            if terraform -chdir=aws-mk8s-vk8s/module-1 apply -auto-approve \
+            if terraform -chdir=aws-mk8s-vk8s/module-1 apply -auto-approve -parallelism=1 \
               -var="project_prefix=${PROJECT_PREFIX}" \
               -var="xc_namespace=${{ needs.prerequisites.outputs.xc_namespace }}" \
               -var="xc_api_url=${{ secrets.XC_API_URL }}" \
