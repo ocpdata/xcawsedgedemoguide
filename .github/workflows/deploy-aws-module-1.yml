@@ -211,6 +211,11 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve -target=volterra_k8s_cluster.mk8s >"$apply_log" 2>&1
           cat "$apply_log"
 
+          if ! terraform -chdir=aws-mk8s-vk8s/prerequisites state list | grep -qx 'volterra_k8s_cluster.mk8s\[0\]'; then
+            echo "::error::XC managed k8s cluster ${TF_VAR_project_prefix}-${TF_VAR_xc_namespace}-mk8s was not persisted in Terraform state after targeted apply."
+            exit 1
+          fi
+
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
@@ -276,6 +281,10 @@ jobs:
               if [[ -z "${TF_VAR_existing_mk8s_cluster_name:-}" ]]; then
                 echo "XC still does not recognize managed k8s cluster ${TF_VAR_project_prefix}-${TF_VAR_xc_namespace}-mk8s; forcing a targeted recreation before retry."
                 terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve -replace=volterra_k8s_cluster.mk8s -target=volterra_k8s_cluster.mk8s
+                  if ! terraform -chdir=aws-mk8s-vk8s/prerequisites state list | grep -qx 'volterra_k8s_cluster.mk8s\[0\]'; then
+                    echo "::error::XC managed k8s cluster ${mk8s_name} was not persisted in Terraform state after forced recreation."
+                    exit 1
+                  fi
                 echo "Waiting for XC managed k8s cluster ${mk8s_name} to become visible after recreation."
                 for mk8s_attempt in $(seq 1 20); do
                   http_code="$(curl \
