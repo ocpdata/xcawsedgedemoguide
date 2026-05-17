@@ -236,6 +236,15 @@ jobs:
               aws ec2 delete-key-pair --region "$AWS_REGION" --key-name "$TF_VAR_kiosk_key_pair_name" || true
             fi
 
+             if grep -q "non-existing k8s_cluster object" "$apply_log"; then
+              if [[ -z "${TF_VAR_existing_mk8s_cluster_name:-}" ]]; then
+                echo "XC still does not recognize managed k8s cluster ${TF_VAR_project_prefix}-${TF_VAR_xc_namespace}-mk8s; forcing a targeted recreation before retry."
+                terraform -chdir=aws-mk8s-vk8s/prerequisites apply -auto-approve -replace=volterra_k8s_cluster.mk8s -target=volterra_k8s_cluster.mk8s
+                echo "Waiting 60 seconds after forced mK8s recreation before retrying prerequisites apply."
+                sleep 60
+              fi
+            fi
+
             if [[ "$attempt" -lt 10 ]] && grep -Eq "non-existing k8s_cluster object|error creating CloudCredentials|InvalidKeyPair.Duplicate" "$apply_log"; then
               echo "Prerequisites apply hit a recoverable error (attempt ${attempt}/10); retrying in 30s"
               cat "$apply_log"
