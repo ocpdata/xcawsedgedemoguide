@@ -748,6 +748,41 @@ jobs:
             exit 1
           fi
 
+      - name: Detect XC namespace state for destroy
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          namespace_endpoint="${api_root}/api/web/namespaces/${XC_NAMESPACE}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$RUNNER_TEMP/destroy-module-1-namespace.json" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$namespace_endpoint" || true)"
+
+          case "$http_code" in
+            200)
+              echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} exists in XC; destroy will reuse it while removing module-1 resources."
+              ;;
+            404)
+              echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} is already absent in XC; destroy will avoid data lookups and clean the remaining Terraform state."
+              ;;
+            *)
+              echo "::error::Unable to determine whether namespace ${XC_NAMESPACE} exists in XC (HTTP ${http_code:-curl-error})."
+              if [[ -s "$RUNNER_TEMP/destroy-module-1-namespace.json" ]]; then
+                cat "$RUNNER_TEMP/destroy-module-1-namespace.json"
+              fi
+              exit 1
+              ;;
+          esac
+
       - name: Terraform init kubeconfig helper
         shell: bash
         run: |
@@ -844,6 +879,7 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/module-1 destroy -auto-approve \
             -var="project_prefix=${PROJECT_PREFIX}" \
             -var="xc_namespace=${XC_NAMESPACE}" \
+            -var="create_xc_namespace=${TF_VAR_create_xc_namespace}" \
             -var="xc_api_url=${{ secrets.XC_API_URL }}" \
             -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
             -var="kubeconfig_path=${{ steps.kubeconfig.outputs.kubeconfig_path }}" \
@@ -967,6 +1003,41 @@ jobs:
             exit 1
           fi
 
+      - name: Detect XC namespace state for prerequisites destroy
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          namespace_endpoint="${api_root}/api/web/namespaces/${XC_NAMESPACE}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$RUNNER_TEMP/destroy-prerequisites-namespace.json" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$namespace_endpoint" || true)"
+
+          case "$http_code" in
+            200)
+              echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} exists in XC; prerequisites destroy will reuse it while tearing down the stack."
+              ;;
+            404)
+              echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} is already absent in XC; prerequisites destroy will avoid data lookups and clean the remaining Terraform state."
+              ;;
+            *)
+              echo "::error::Unable to determine whether namespace ${XC_NAMESPACE} exists in XC (HTTP ${http_code:-curl-error})."
+              if [[ -s "$RUNNER_TEMP/destroy-prerequisites-namespace.json" ]]; then
+                cat "$RUNNER_TEMP/destroy-prerequisites-namespace.json"
+              fi
+              exit 1
+              ;;
+          esac
+
       - name: Terraform init prerequisites
         shell: bash
         run: |
@@ -984,7 +1055,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve
+          terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve \
+            -var="create_xc_namespace=${TF_VAR_create_xc_namespace}"
 
       - name: Write prerequisites destroy summary
         if: always()
@@ -1085,6 +1157,41 @@ jobs:
             exit 1
           fi
 
+      - name: Detect XC namespace state for kiosk destroy
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          namespace_endpoint="${api_root}/api/web/namespaces/${XC_NAMESPACE}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$RUNNER_TEMP/destroy-kiosk-namespace.json" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$namespace_endpoint" || true)"
+
+          case "$http_code" in
+            200)
+              echo "TF_VAR_create_xc_namespace=false" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} exists in XC; targeted kiosk destroy will reuse it while updating Terraform state."
+              ;;
+            404)
+              echo "TF_VAR_create_xc_namespace=true" >> "$GITHUB_ENV"
+              echo "Namespace ${XC_NAMESPACE} is already absent in XC; targeted kiosk destroy will avoid data lookups and clean the remaining Terraform state."
+              ;;
+            *)
+              echo "::error::Unable to determine whether namespace ${XC_NAMESPACE} exists in XC (HTTP ${http_code:-curl-error})."
+              if [[ -s "$RUNNER_TEMP/destroy-kiosk-namespace.json" ]]; then
+                cat "$RUNNER_TEMP/destroy-kiosk-namespace.json"
+              fi
+              exit 1
+              ;;
+          esac
+
       - name: Terraform init prerequisites
         shell: bash
         run: |
@@ -1103,6 +1210,7 @@ jobs:
         run: |
           set -euo pipefail
           terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve \
+            -var="create_xc_namespace=${TF_VAR_create_xc_namespace}" \
             -target=aws_instance.kiosk
 
       - name: Write kiosk destroy summary
