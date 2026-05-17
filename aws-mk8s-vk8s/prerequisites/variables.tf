@@ -24,6 +24,18 @@ variable "xc_api_p12_file" {
   type        = string
 }
 
+variable "cloud_credential_name" {
+  description = "Optional existing XC cloud credential name to reuse instead of creating a new one."
+  type        = string
+  default     = ""
+}
+
+variable "create_cloud_credential" {
+  description = "Whether prerequisites should create the XC cloud credential when it does not already exist."
+  type        = bool
+  default     = true
+}
+
 variable "aws_region" {
   description = "AWS region where the App Stack site will be created."
   type        = string
@@ -73,4 +85,10 @@ variable "windows_admin_password" {
     )
     error_message = "windows_admin_password must be empty or be at least 8 characters long and include uppercase, lowercase, numeric, and special characters. Example: Password123!."
   }
+}
+
+variable "kiosk_key_pair_name" {
+  description = "Optional explicit AWS key pair name for the kiosk VM. When empty, prerequisites derive one from the project prefix and namespace."
+  type        = string
+  default     = ""
 }

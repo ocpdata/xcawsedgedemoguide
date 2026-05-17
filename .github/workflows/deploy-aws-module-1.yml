@@ -111,6 +111,9 @@ jobs:
           echo "workspace_prefix=$workspace_prefix" >> "$GITHUB_OUTPUT"
           echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
           echo "MODULE1_WORKSPACE=${workspace_prefix}-module-1" >> "$GITHUB_ENV"
+          echo "TF_VAR_cloud_credential_name=${workspace_prefix}-aws-cred" >> "$GITHUB_ENV"
+          echo "TF_VAR_create_cloud_credential=true" >> "$GITHUB_ENV"
+          echo "TF_VAR_kiosk_key_pair_name=${workspace_prefix}-kiosk-key-${GITHUB_RUN_ID:(-8)}" >> "$GITHUB_ENV"
 
       - name: Decode XC API credential
         shell: bash
@@ -223,8 +226,18 @@ jobs:
               exit 0
             fi
 
-            if grep -q "non-existing k8s_cluster object" "$apply_log" && [[ "$attempt" -lt 10 ]]; then
-              echo "mK8s object is not visible to XC App Stack creation yet (attempt ${attempt}/10); retrying prerequisites apply in 30s"
+            if grep -q "error creating CloudCredentials" "$apply_log" && grep -q "Object already exists" "$apply_log"; then
+              echo "XC cloud credential ${TF_VAR_cloud_credential_name} already exists; retrying while reusing it."
+              export TF_VAR_create_cloud_credential=false
+            fi
+
+            if grep -q "InvalidKeyPair.Duplicate" "$apply_log"; then
+              echo "AWS key pair ${TF_VAR_kiosk_key_pair_name} already exists; deleting it before retry."
+              aws ec2 delete-key-pair --region "$AWS_REGION" --key-name "$TF_VAR_kiosk_key_pair_name" || true
+            fi
+
+            if [[ "$attempt" -lt 10 ]] && grep -Eq "non-existing k8s_cluster object|error creating CloudCredentials|InvalidKeyPair.Duplicate" "$apply_log"; then
+              echo "Prerequisites apply hit a recoverable error (attempt ${attempt}/10); retrying in 30s"
               cat "$apply_log"
               sleep 30
               continue

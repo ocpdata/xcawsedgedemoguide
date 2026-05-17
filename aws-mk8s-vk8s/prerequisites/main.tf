@@ -2,12 +2,14 @@ locals {
   base_name                   = join("-", compact([var.project_prefix, var.xc_namespace]))
   aws_site_name               = "aws-${local.base_name}"
   cloud_cred_name             = "${local.base_name}-aws-cred"
+  effective_cloud_cred_name   = trimspace(var.cloud_credential_name) != "" ? trimspace(var.cloud_credential_name) : local.cloud_cred_name
   k8s_cluster_name            = "${local.aws_site_name}-mk8s"
   vpc_name                    = "${local.base_name}-vpc"
   subnet_a_cidr               = cidrsubnet(var.vpc_cidr, 8, 10)
   app_stack_location          = "${local.base_name}-app-stack"
   effective_namespace         = trimspace(var.xc_namespace)
   effective_mk8s_cluster_name = trimspace(var.existing_mk8s_cluster_name) != "" ? trimspace(var.existing_mk8s_cluster_name) : local.k8s_cluster_name
+  effective_kiosk_key_name    = trimspace(var.kiosk_key_pair_name) != "" ? trimspace(var.kiosk_key_pair_name) : "${local.base_name}-kiosk-key"
   windows_admin_password_ps   = replace(var.windows_admin_password, "'", "''")
   windows_user_data = join("\n", concat([
     "<powershell>",
@@ -57,7 +59,8 @@ resource "tls_private_key" "appstack_key" {
 }
 
 resource "volterra_cloud_credentials" "aws_cred" {
-  name      = local.cloud_cred_name
+  count     = var.create_cloud_credential ? 1 : 0
+  name      = local.effective_cloud_cred_name
   namespace = "system"
 
   aws_secret_key {
@@ -119,8 +122,8 @@ resource "volterra_aws_vpc_site" "appstack" {
   }
 
   aws_cred {
-    name      = volterra_cloud_credentials.aws_cred.name
-    namespace = volterra_cloud_credentials.aws_cred.namespace
+    name      = local.effective_cloud_cred_name
+    namespace = "system"
   }
 
   vpc {
@@ -182,7 +185,7 @@ resource "tls_private_key" "kiosk_key_pair" {
 }
 
 resource "aws_key_pair" "kiosk_key_pair" {
-  key_name   = "${local.base_name}-kiosk-key"
+  key_name   = local.effective_kiosk_key_name
   public_key = tls_private_key.kiosk_key_pair.public_key_openssh
 }
 
