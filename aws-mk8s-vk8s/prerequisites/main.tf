@@ -135,7 +135,7 @@ resource "volterra_aws_vpc_site" "appstack" {
   disable_internet_vip    = true
   logs_streaming_disabled = true
   ssh_key                 = tls_private_key.appstack_key.public_key_openssh
-  no_worker_nodes         = true
+  no_worker_nodes         = false
 
   voltstack_cluster {
     aws_certified_hw = "aws-byol-voltstack-combo"
