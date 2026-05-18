@@ -1134,12 +1134,99 @@ jobs:
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
+          kiosk_pool_name="${PROJECT_PREFIX}-${namespace}-kiosk-pool"
+          kiosk_lb_name="${PROJECT_PREFIX}-${namespace}-kiosk-internal"
+          kiosk_pool_endpoint="${api_root}/api/config/namespaces/${namespace}/origin_pools/${kiosk_pool_name}"
+          kiosk_lb_endpoint="${api_root}/api/config/namespaces/${namespace}/http_loadbalancers/${kiosk_lb_name}"
+          kiosk_pool_response="$RUNNER_TEMP/module-1-kiosk-pool.json"
+          kiosk_lb_response="$RUNNER_TEMP/module-1-kiosk-lb.json"
           recommendations_pool_name="${PROJECT_PREFIX}-${namespace}-recommendations-pool"
           recommendations_lb_name="${PROJECT_PREFIX}-${namespace}-recommendations"
           recommendations_pool_endpoint="${api_root}/api/config/namespaces/${namespace}/origin_pools/${recommendations_pool_name}"
           recommendations_lb_endpoint="${api_root}/api/config/namespaces/${namespace}/http_loadbalancers/${recommendations_lb_name}"
           recommendations_pool_response="$RUNNER_TEMP/module-1-recommendations-pool.json"
           recommendations_lb_response="$RUNNER_TEMP/module-1-recommendations-lb.json"
+
+          cleanup_origin_pool_conflict() {
+            local resource_label="$1"
+            local pool_name="$2"
+            local lb_name="$3"
+            local pool_endpoint="$4"
+            local lb_endpoint="$5"
+            local pool_response="$6"
+            local lb_response="$7"
+            local lb_http_code=""
+            local lb_delete_code=""
+            local http_code=""
+            local delete_code=""
+
+            echo "XC ${resource_label} origin pool ${pool_name} already exists outside Terraform state; deleting dependent load balancer and pool before retry."
+            lb_http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$lb_response" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$lb_endpoint" || true)"
+
+            if [[ "$lb_http_code" != "200" && "$lb_http_code" != "404" ]]; then
+              echo "::error::Unable to inspect existing XC ${resource_label} load balancer ${lb_name} (HTTP ${lb_http_code:-curl-error})."
+              [[ -s "$lb_response" ]] && cat "$lb_response"
+              exit 1
+            fi
+
+            if [[ "$lb_http_code" == "200" ]]; then
+              lb_delete_code="$(curl \
+                --silent \
+                --show-error \
+                --output "$lb_response" \
+                --write-out '%{http_code}' \
+                --request DELETE \
+                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                --key "$RUNNER_TEMP/xc-api-key.pem" \
+                "$lb_endpoint" || true)"
+
+              if [[ "$lb_delete_code" != "200" && "$lb_delete_code" != "202" && "$lb_delete_code" != "204" && "$lb_delete_code" != "404" ]]; then
+                echo "::error::Unable to delete stale XC ${resource_label} load balancer ${lb_name} (HTTP ${lb_delete_code:-curl-error})."
+                [[ -s "$lb_response" ]] && cat "$lb_response"
+                exit 1
+              fi
+            fi
+
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$pool_response" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$pool_endpoint" || true)"
+
+            if [[ "$http_code" != "200" && "$http_code" != "404" ]]; then
+              echo "::error::Unable to inspect existing XC ${resource_label} origin pool ${pool_name} (HTTP ${http_code:-curl-error})."
+              [[ -s "$pool_response" ]] && cat "$pool_response"
+              exit 1
+            fi
+
+            if [[ "$http_code" == "200" ]]; then
+              delete_code="$(curl \
+                --silent \
+                --show-error \
+                --output "$pool_response" \
+                --write-out '%{http_code}' \
+                --request DELETE \
+                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                --key "$RUNNER_TEMP/xc-api-key.pem" \
+                "$pool_endpoint" || true)"
+
+              if [[ "$delete_code" != "200" && "$delete_code" != "202" && "$delete_code" != "204" && "$delete_code" != "404" ]]; then
+                echo "::error::Unable to delete stale XC ${resource_label} origin pool ${pool_name} (HTTP ${delete_code:-curl-error})."
+                [[ -s "$pool_response" ]] && cat "$pool_response"
+                exit 1
+              fi
+            fi
+          }
 
           for attempt in $(seq 1 "$attempts"); do
             if terraform -chdir=aws-mk8s-vk8s/module-1 apply -auto-approve -parallelism=1 \
@@ -1156,71 +1243,30 @@ jobs:
             fi
 
             if grep -q "error creating OriginPool" "$apply_log" && grep -q "Object already exists" "$apply_log"; then
-              echo "XC recommendations origin pool ${recommendations_pool_name} already exists outside Terraform state; deleting dependent load balancer and pool before retry."
-              lb_http_code="$(curl \
-                --silent \
-                --show-error \
-                --output "$recommendations_lb_response" \
-                --write-out '%{http_code}' \
-                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-                --key "$RUNNER_TEMP/xc-api-key.pem" \
-                "$recommendations_lb_endpoint" || true)"
+              recovered_origin_pool_conflict=false
 
-              if [[ "$lb_http_code" != "200" && "$lb_http_code" != "404" ]]; then
-                echo "::error::Unable to inspect existing XC recommendations load balancer ${recommendations_lb_name} (HTTP ${lb_http_code:-curl-error})."
-                [[ -s "$recommendations_lb_response" ]] && cat "$recommendations_lb_response"
-                exit 1
+              if grep -Eq "${kiosk_pool_name}|with volterra_origin_pool\.kiosk" "$apply_log"; then
+                cleanup_origin_pool_conflict \
+                  "kiosk" \
+                  "$kiosk_pool_name" \
+                  "$kiosk_lb_name" \
+                  "$kiosk_pool_endpoint" \
+                  "$kiosk_lb_endpoint" \
+                  "$kiosk_pool_response" \
+                  "$kiosk_lb_response"
+                recovered_origin_pool_conflict=true
               fi
 
-              if [[ "$lb_http_code" == "200" ]]; then
-                lb_delete_code="$(curl \
-                  --silent \
-                  --show-error \
-                  --output "$recommendations_lb_response" \
-                  --write-out '%{http_code}' \
-                  --request DELETE \
-                  --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-                  --key "$RUNNER_TEMP/xc-api-key.pem" \
-                  "$recommendations_lb_endpoint" || true)"
-
-                if [[ "$lb_delete_code" != "200" && "$lb_delete_code" != "202" && "$lb_delete_code" != "204" && "$lb_delete_code" != "404" ]]; then
-                  echo "::error::Unable to delete stale XC recommendations load balancer ${recommendations_lb_name} (HTTP ${lb_delete_code:-curl-error})."
-                  [[ -s "$recommendations_lb_response" ]] && cat "$recommendations_lb_response"
-                  exit 1
-                fi
-              fi
-
-              http_code="$(curl \
-                --silent \
-                --show-error \
-                --output "$recommendations_pool_response" \
-                --write-out '%{http_code}' \
-                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-                --key "$RUNNER_TEMP/xc-api-key.pem" \
-                "$recommendations_pool_endpoint" || true)"
-
-              if [[ "$http_code" != "200" && "$http_code" != "404" ]]; then
-                echo "::error::Unable to inspect existing XC recommendations origin pool ${recommendations_pool_name} (HTTP ${http_code:-curl-error})."
-                [[ -s "$recommendations_pool_response" ]] && cat "$recommendations_pool_response"
-                exit 1
-              fi
-
-              if [[ "$http_code" == "200" ]]; then
-                delete_code="$(curl \
-                  --silent \
-                  --show-error \
-                  --output "$recommendations_pool_response" \
-                  --write-out '%{http_code}' \
-                  --request DELETE \
-                  --cert "$RUNNER_TEMP/xc-api-cert.pem" \
-                  --key "$RUNNER_TEMP/xc-api-key.pem" \
-                  "$recommendations_pool_endpoint" || true)"
-
-                if [[ "$delete_code" != "200" && "$delete_code" != "202" && "$delete_code" != "204" && "$delete_code" != "404" ]]; then
-                  echo "::error::Unable to delete stale XC recommendations origin pool ${recommendations_pool_name} (HTTP ${delete_code:-curl-error})."
-                  [[ -s "$recommendations_pool_response" ]] && cat "$recommendations_pool_response"
-                  exit 1
-                fi
+              if grep -Eq "${recommendations_pool_name}|with volterra_origin_pool\.recommendations" "$apply_log"; then
+                cleanup_origin_pool_conflict \
+                  "recommendations" \
+                  "$recommendations_pool_name" \
+                  "$recommendations_lb_name" \
+                  "$recommendations_pool_endpoint" \
+                  "$recommendations_lb_endpoint" \
+                  "$recommendations_pool_response" \
+                  "$recommendations_lb_response"
+                recovered_origin_pool_conflict=true
               fi
             fi
 
@@ -1231,8 +1277,8 @@ jobs:
               continue
             fi
 
-            if grep -q "error creating OriginPool" "$apply_log" && grep -q "Object already exists" "$apply_log" && [[ "$attempt" -lt "$attempts" ]]; then
-              echo "Recovered stale XC recommendations origin pool conflict during module 1 apply (attempt ${attempt}/${attempts}); retrying in ${sleep_seconds}s"
+            if [[ "${recovered_origin_pool_conflict:-false}" == "true" && "$attempt" -lt "$attempts" ]]; then
+              echo "Recovered stale XC origin pool conflict during module 1 apply (attempt ${attempt}/${attempts}); retrying in ${sleep_seconds}s"
               sleep "$sleep_seconds"
               continue
             fi
