@@ -32,6 +32,7 @@ resource "kubectl_manifest" "kiosk_namespace" {
 resource "kubectl_manifest" "kiosk_workload" {
   count     = length(local.kiosk_workload_objects)
   yaml_body = local.kiosk_workload_objects[count.index]
+  wait_for_rollout = false
 
   depends_on = [kubectl_manifest.kiosk_namespace]
 }
