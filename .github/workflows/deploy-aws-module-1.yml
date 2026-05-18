@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-aws-staged-modules-${{ vars.PROJECT_PREFIX }}-${{ vars.XC_NAMESPACE }}
+  cancel-in-progress: false
+
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
@@ -582,7 +586,7 @@ jobs:
           if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
             candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
           fi
-          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+          candidates+=("ves-io-admin-role" "Admin" "admin" "ves-io-admin")
 
           selected_role=""
           for role in "${candidates[@]}"; do
@@ -641,7 +645,6 @@ jobs:
           attempts=80
           sleep_seconds=15
           request_timeout=20s
-          cluster_info_log="$RUNNER_TEMP/prereq-mk8s-cluster-info.log"
           namespace_probe_log="$RUNNER_TEMP/prereq-mk8s-namespace-probe.log"
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
@@ -651,21 +654,17 @@ jobs:
           site_response_file="$RUNNER_TEMP/prereq-mk8s-site-status-on-timeout.json"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
-              cat "$cluster_info_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
               cat "$namespace_probe_log"
               exit 0
             fi
 
             echo "Prerequisite mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-            [[ -s "$cluster_info_log" ]] && tail -n 5 "$cluster_info_log"
             [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the prerequisite mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" cluster-info || true
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name || true
 
           http_code="$(curl \
@@ -700,31 +699,38 @@ jobs:
           kubeconfig_path='${{ steps.prereq_kubeconfig.outputs.kubeconfig_path }}'
           attempts=40
           sleep_seconds=15
-          probe_namespace="prereq-probe-${GITHUB_RUN_ID:(-6)}"
+          probe_namespace='system'
           probe_configmap="api-probe"
+          configmap_apply_log="$RUNNER_TEMP/prereq-mk8s-configmap-apply.log"
+          configmap_get_log="$RUNNER_TEMP/prereq-mk8s-configmap-get.log"
+          probe_configmap_name="${probe_configmap}-${GITHUB_RUN_ID:(-6)}"
 
           for attempt in $(seq 1 "$attempts"); do
             node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
             echo "Prerequisite ready nodes: ${node_ready}"
 
             if [[ "$node_ready" -ge 1 ]] && \
-              kubectl --kubeconfig "$kubeconfig_path" create namespace "$probe_namespace" --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap" -o name >/dev/null 2>&1; then
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap" --ignore-not-found >/dev/null 2>&1 || true
-              kubectl --kubeconfig "$kubeconfig_path" delete namespace "$probe_namespace" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap_name" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >"$configmap_apply_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap_name" -o name >"$configmap_get_log" 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap_name" --ignore-not-found >/dev/null 2>&1 || true
               exit 0
             fi
 
             if [[ "$attempt" -lt "$attempts" ]]; then
+              if [[ "$node_ready" -ge 1 ]]; then
+                [[ -s "$configmap_apply_log" ]] && tail -n 5 "$configmap_apply_log"
+                [[ -s "$configmap_get_log" ]] && tail -n 5 "$configmap_get_log"
+              fi
               echo "Prerequisite mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
               sleep "$sleep_seconds"
             fi
           done
 
           echo "::error::Timed out waiting for prerequisite mK8s functional readiness."
+          [[ -s "$configmap_apply_log" ]] && cat "$configmap_apply_log"
+          [[ -s "$configmap_get_log" ]] && cat "$configmap_get_log"
           kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" get namespace default -o yaml || true
+          kubectl --kubeconfig "$kubeconfig_path" get namespace "$probe_namespace" -o yaml || true
           exit 1
 
   module_1:
@@ -961,7 +967,7 @@ jobs:
           if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
             candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
           fi
-          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+          candidates+=("ves-io-admin-role" "Admin" "admin" "ves-io-admin")
 
           selected_role=""
           for role in "${candidates[@]}"; do
@@ -1020,7 +1026,6 @@ jobs:
           attempts=80
           sleep_seconds=15
           request_timeout=20s
-          cluster_info_log="$RUNNER_TEMP/mk8s-cluster-info.log"
           namespace_probe_log="$RUNNER_TEMP/mk8s-namespace-probe.log"
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
@@ -1030,17 +1035,12 @@ jobs:
           site_response_file="$RUNNER_TEMP/mk8s-site-status-on-timeout.json"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
-              cat "$cluster_info_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
               cat "$namespace_probe_log"
               exit 0
             fi
 
             echo "mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-            if [[ -s "$cluster_info_log" ]]; then
-              tail -n 5 "$cluster_info_log"
-            fi
             if [[ -s "$namespace_probe_log" ]]; then
               tail -n 5 "$namespace_probe_log"
             fi
@@ -1048,7 +1048,6 @@ jobs:
           done
 
           echo "::error::Timed out waiting for the mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" cluster-info || true
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name || true
 
           http_code="$(curl \
@@ -1083,31 +1082,38 @@ jobs:
           kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
           attempts=40
           sleep_seconds=15
-          probe_namespace="module1-probe-${GITHUB_RUN_ID:(-6)}"
+          probe_namespace='${{ needs.prerequisites.outputs.xc_namespace }}'
           probe_configmap="api-probe"
+          configmap_apply_log="$RUNNER_TEMP/mk8s-configmap-apply.log"
+          configmap_get_log="$RUNNER_TEMP/mk8s-configmap-get.log"
+          probe_configmap_name="${probe_configmap}-${GITHUB_RUN_ID:(-6)}"
 
           for attempt in $(seq 1 "$attempts"); do
             node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
             echo "Ready nodes: ${node_ready}"
 
             if [[ "$node_ready" -ge 1 ]] && \
-              kubectl --kubeconfig "$kubeconfig_path" create namespace "$probe_namespace" --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap" -o name >/dev/null 2>&1; then
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap" --ignore-not-found >/dev/null 2>&1 || true
-              kubectl --kubeconfig "$kubeconfig_path" delete namespace "$probe_namespace" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap_name" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >"$configmap_apply_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap_name" -o name >"$configmap_get_log" 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap_name" --ignore-not-found >/dev/null 2>&1 || true
               exit 0
             fi
 
             if [[ "$attempt" -lt "$attempts" ]]; then
+              if [[ "$node_ready" -ge 1 ]]; then
+                [[ -s "$configmap_apply_log" ]] && tail -n 5 "$configmap_apply_log"
+                [[ -s "$configmap_get_log" ]] && tail -n 5 "$configmap_get_log"
+              fi
               echo "mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
               sleep "$sleep_seconds"
             fi
           done
 
           echo "::error::Timed out waiting for mK8s functional readiness."
+          [[ -s "$configmap_apply_log" ]] && cat "$configmap_apply_log"
+          [[ -s "$configmap_get_log" ]] && cat "$configmap_get_log"
           kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" get namespace default -o yaml || true
+          kubectl --kubeconfig "$kubeconfig_path" get namespace "$probe_namespace" -o yaml || true
           exit 1
 
       - name: Terraform init module 1
@@ -1631,7 +1637,7 @@ jobs:
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
           site_name='${{ vars.CE_SITE_NAME }}'
-          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}"
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}?response_format=GET_RSP_FORMAT_STATUS"
           attempts=120
           sleep_seconds=30
           response_file="$RUNNER_TEMP/ce-site-status.json"
@@ -1649,6 +1655,10 @@ jobs:
             if [[ "$http_code" == "200" ]]; then
               site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
               operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              apply_state="$(jq -r '[.status[]?.deployment?.apply_status?.apply_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              rollback_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_rollback_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              upgrade_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              running_state="$(jq -r '[.status[]?.ver_status?.running_state_status?.state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
               status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)" , (.status[]?.site_state // empty), .spec?.site_state, .replace_form?.spec?.site_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
               if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
                 status_summary="no detailed status"
@@ -1656,11 +1666,27 @@ jobs:
 
               echo "XC CE site state: ${site_state:-unknown}"
               echo "XC CE site operational status: ${operational_status:-unknown}"
+              echo "XC CE site apply state: ${apply_state:-unknown} | rollback: ${rollback_state:-unknown} | upgrade: ${upgrade_state:-unknown}"
+              echo "XC CE site running state: ${running_state:-unknown}"
               echo "XC CE site details: ${status_summary}"
+
+              if [[ -n "$apply_state" && ( "$apply_state" == *"ERRORED" || "$apply_state" == *"FAILED" ) ]]; then
+                echo "::error::XC CE site deployment entered a terminal apply state: ${apply_state}."
+                cat "$response_file"
+                exit 1
+              fi
+
+              if [[ "$apply_state" == "APPLIED" ]]; then
+                if [[ "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                  exit 0
+                fi
+              fi
 
               case "$site_state" in
                 ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
-                  exit 0
+                  if [[ -z "$operational_status" || "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                    exit 0
+                  fi
                   ;;
                 FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
                   echo "::error::XC CE site entered a terminal state: ${site_state}."
@@ -1859,7 +1885,7 @@ jobs:
           if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
             candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
           fi
-          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+          candidates+=("ves-io-admin-role" "Admin" "admin" "ves-io-admin")
 
           selected_role=""
           for role in "${candidates[@]}"; do
@@ -1870,24 +1896,34 @@ jobs:
             tried_roles="${tried_roles:-} $role"
 
             apply_log="$RUNNER_TEMP/module-2-branch-kubeconfig-${role}.log"
-            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
-              -var="project_prefix=${PROJECT_PREFIX}" \
-              -var="site_name=${APP_STACK_NAME}" \
-              -var="xc_namespace=${XC_NAMESPACE_OUTPUT}" \
-              -var="service_credential_role=${role}" \
-              -var="credential_name=${credential_name}" \
-              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-              >"$apply_log" 2>&1
-            then
-              selected_role="$role"
-              break
-            fi
+            for attempt in $(seq 1 20); do
+              if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+                -var="project_prefix=${PROJECT_PREFIX}" \
+                -var="site_name=${APP_STACK_NAME}" \
+                -var="xc_namespace=${XC_NAMESPACE_OUTPUT}" \
+                -var="service_credential_role=${role}" \
+                -var="credential_name=${credential_name}" \
+                -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+                -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+                >"$apply_log" 2>&1
+              then
+                selected_role="$role"
+                break 2
+              fi
 
-            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              if grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+                break
+              fi
+
+              if grep -Eqi "not found|failed to find site|site.*not.*ready|timed out|timeout|connection refused|unavailable|EOF" "$apply_log" && [[ "$attempt" -lt 20 ]]; then
+                echo "Module 2 branch site kubeconfig not available yet for role ${role} (attempt ${attempt}/20); retrying in 15s"
+                sleep 15
+                continue
+              fi
+
               cat "$apply_log"
               exit 1
-            fi
+            done
           done
 
           if [[ -z "$selected_role" ]]; then
@@ -2058,7 +2094,7 @@ jobs:
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
           site_name='${{ vars.CE_SITE_NAME }}'
-          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}"
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}?response_format=GET_RSP_FORMAT_STATUS"
           attempts=120
           sleep_seconds=30
           response_file="$RUNNER_TEMP/module-2-ce-site-status.json"
@@ -2075,9 +2111,39 @@ jobs:
 
             if [[ "$http_code" == "200" ]]; then
               site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              apply_state="$(jq -r '[.status[]?.deployment?.apply_status?.apply_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              rollback_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_rollback_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              upgrade_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              running_state="$(jq -r '[.status[]?.ver_status?.running_state_status?.state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)", .status[]?.site_state, .spec?.site_state, .replace_form?.spec?.site_state, .status[]?.deployment?.apply_status?.apply_state, .status[]?.deployment?.apply_status?.tf_rollback_state, .status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
+              if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
+                status_summary="no detailed status"
+              fi
+
+              echo "XC CE site state: ${site_state:-unknown}"
+              echo "XC CE site operational status: ${operational_status:-unknown}"
+              echo "XC CE site apply state: ${apply_state:-unknown} | rollback: ${rollback_state:-unknown} | upgrade: ${upgrade_state:-unknown}"
+              echo "XC CE site running state: ${running_state:-unknown}"
+              echo "XC CE site details: ${status_summary}"
+
+              if [[ -n "$apply_state" && ( "$apply_state" == *"ERRORED" || "$apply_state" == *"FAILED" ) ]]; then
+                echo "::error::XC CE site deployment entered a terminal apply state: ${apply_state}."
+                cat "$response_file"
+                exit 1
+              fi
+
+              if [[ "$apply_state" == "APPLIED" ]]; then
+                if [[ "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                  exit 0
+                fi
+              fi
+
               case "$site_state" in
                 ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
-                  exit 0
+                  if [[ -z "$operational_status" || "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                    exit 0
+                  fi
                   ;;
                 FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
                   echo "::error::XC CE site entered a terminal state: ${site_state}."
@@ -2111,22 +2177,54 @@ jobs:
 
           attempts=80
           sleep_seconds=15
-          cluster_info_log="$RUNNER_TEMP/module-2-vk8s-cluster-info.log"
           namespace_probe_log="$RUNNER_TEMP/module-2-vk8s-namespace.log"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE2_ENVIRONMENT}" -o name >"$namespace_probe_log" 2>&1; then
-              cat "$cluster_info_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE2_ENVIRONMENT}" -o name >"$namespace_probe_log" 2>&1; then
               cat "$namespace_probe_log"
               exit 0
             fi
 
             echo "vK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the module-2 vK8s API to become ready."
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE2_ENVIRONMENT}" -o name || true
+          exit 1
+
+      - name: Wait for vK8s functional readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path="$RUNNER_TEMP/module-2-vk8s-kubeconfig.yaml"
+          attempts=40
+          sleep_seconds=15
+          probe_namespace="${MODULE2_ENVIRONMENT}"
+          probe_configmap="api-probe-${GITHUB_RUN_ID:(-6)}"
+          configmap_apply_log="$RUNNER_TEMP/module-2-vk8s-configmap-apply.log"
+          configmap_get_log="$RUNNER_TEMP/module-2-vk8s-configmap-get.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >"$configmap_apply_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap" -o name >"$configmap_get_log" 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap" --ignore-not-found >/dev/null 2>&1 || true
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              [[ -s "$configmap_apply_log" ]] && tail -n 5 "$configmap_apply_log"
+              [[ -s "$configmap_get_log" ]] && tail -n 5 "$configmap_get_log"
+              echo "vK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for module-2 vK8s functional readiness."
+          [[ -s "$configmap_apply_log" ]] && cat "$configmap_apply_log"
+          [[ -s "$configmap_get_log" ]] && cat "$configmap_get_log"
+          kubectl --kubeconfig "$kubeconfig_path" get namespace "$probe_namespace" -o yaml || true
           exit 1
 
       - name: Terraform init module 2
@@ -2227,6 +2325,40 @@ jobs:
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE2_ENVIRONMENT}" get deployments,svc -o wide
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE2_ENVIRONMENT}" rollout status deployment/inventory-server-deployment --timeout=10m
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE2_ENVIRONMENT}" get pods -o wide
+
+      - name: Wait for branch mK8s readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
+          attempts=40
+          sleep_seconds=15
+          namespace_probe_log="$RUNNER_TEMP/module-2-branch-namespace.log"
+          rollout_log="$RUNNER_TEMP/module-2-branch-wordpress-rollout.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$branch_kubeconfig_path" --request-timeout=10s get namespace "$branch_namespace" -o name >"$namespace_probe_log" 2>&1 && \
+              kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" rollout status deployment/wordpress-deployment --timeout=30s >"$rollout_log" 2>&1; then
+              cat "$namespace_probe_log"
+              cat "$rollout_log"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
+              [[ -s "$rollout_log" ]] && tail -n 5 "$rollout_log"
+              echo "Branch mK8s not ready yet for module 2 validations (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for branch mK8s readiness before module 2 validations."
+          [[ -s "$namespace_probe_log" ]] && cat "$namespace_probe_log"
+          [[ -s "$rollout_log" ]] && cat "$rollout_log"
+          kubectl --kubeconfig "$branch_kubeconfig_path" get namespace "$branch_namespace" -o yaml || true
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get deployments,pods -o wide || true
+          exit 1
 
       - name: Validate module 2 TCP connectivity from branch
         shell: bash
@@ -2504,7 +2636,7 @@ jobs:
           if [[ -n "${XC_SERVICE_CREDENTIAL_ROLE:-}" ]]; then
             candidates+=("$XC_SERVICE_CREDENTIAL_ROLE")
           fi
-          candidates+=("ves-io-admin-role" "Admin" "admin" "Standard" "standard" "ves-io-admin")
+          candidates+=("ves-io-admin-role" "Admin" "admin" "ves-io-admin")
 
           selected_role=""
           for role in "${candidates[@]}"; do
@@ -2515,24 +2647,34 @@ jobs:
             tried_roles="${tried_roles:-} $role"
 
             apply_log="$RUNNER_TEMP/module-3-branch-kubeconfig-${role}.log"
-            if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
-              -var="project_prefix=${PROJECT_PREFIX}" \
-              -var="site_name=${APP_STACK_NAME}" \
-              -var="xc_namespace=${XC_NAMESPACE_OUTPUT}" \
-              -var="service_credential_role=${role}" \
-              -var="credential_name=${credential_name}" \
-              -var="xc_api_url=${{ secrets.XC_API_URL }}" \
-              -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
-              >"$apply_log" 2>&1
-            then
-              selected_role="$role"
-              break
-            fi
+            for attempt in $(seq 1 20); do
+              if terraform -chdir=aws-mk8s-vk8s/kubeconfig apply -auto-approve \
+                -var="project_prefix=${PROJECT_PREFIX}" \
+                -var="site_name=${APP_STACK_NAME}" \
+                -var="xc_namespace=${XC_NAMESPACE_OUTPUT}" \
+                -var="service_credential_role=${role}" \
+                -var="credential_name=${credential_name}" \
+                -var="xc_api_url=${{ secrets.XC_API_URL }}" \
+                -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12" \
+                >"$apply_log" 2>&1
+              then
+                selected_role="$role"
+                break 2
+              fi
 
-            if ! grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+              if grep -q "role '.*' is not found or it is disabled" "$apply_log"; then
+                break
+              fi
+
+              if grep -Eqi "not found|failed to find site|site.*not.*ready|timed out|timeout|connection refused|unavailable|EOF" "$apply_log" && [[ "$attempt" -lt 20 ]]; then
+                echo "Module 3 branch site kubeconfig not available yet for role ${role} (attempt ${attempt}/20); retrying in 15s"
+                sleep 15
+                continue
+              fi
+
               cat "$apply_log"
               exit 1
-            fi
+            done
           done
 
           if [[ -z "$selected_role" ]]; then
@@ -2622,7 +2764,7 @@ jobs:
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
           site_name='${{ vars.CE_SITE_NAME }}'
-          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}"
+          site_endpoint="${api_root}/api/config/namespaces/system/sites/${site_name}?response_format=GET_RSP_FORMAT_STATUS"
           attempts=120
           sleep_seconds=30
           response_file="$RUNNER_TEMP/module-3-ce-site-status.json"
@@ -2639,9 +2781,39 @@ jobs:
 
             if [[ "$http_code" == "200" ]]; then
               site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              apply_state="$(jq -r '[.status[]?.deployment?.apply_status?.apply_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              rollback_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_rollback_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              upgrade_state="$(jq -r '[.status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              running_state="$(jq -r '[.status[]?.ver_status?.running_state_status?.state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+              status_summary="$(jq -r '[.status[]?.conditions[]? | select(.type != null and .status != null) | "\(.type)=\(.status)", .status[]?.site_state, .spec?.site_state, .replace_form?.spec?.site_state, .status[]?.deployment?.apply_status?.apply_state, .status[]?.deployment?.apply_status?.tf_rollback_state, .status[]?.deployment?.apply_status?.tf_upgrade_state] | map(select(. != null and . != "")) | unique | join(" | ")' "$response_file")"
+              if [[ -z "$status_summary" || "$status_summary" == "null" ]]; then
+                status_summary="no detailed status"
+              fi
+
+              echo "XC CE site state: ${site_state:-unknown}"
+              echo "XC CE site operational status: ${operational_status:-unknown}"
+              echo "XC CE site apply state: ${apply_state:-unknown} | rollback: ${rollback_state:-unknown} | upgrade: ${upgrade_state:-unknown}"
+              echo "XC CE site running state: ${running_state:-unknown}"
+              echo "XC CE site details: ${status_summary}"
+
+              if [[ -n "$apply_state" && ( "$apply_state" == *"ERRORED" || "$apply_state" == *"FAILED" ) ]]; then
+                echo "::error::XC CE site deployment entered a terminal apply state: ${apply_state}."
+                cat "$response_file"
+                exit 1
+              fi
+
+              if [[ "$apply_state" == "APPLIED" ]]; then
+                if [[ "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                  exit 0
+                fi
+              fi
+
               case "$site_state" in
                 ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
-                  exit 0
+                  if [[ -z "$operational_status" || "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                    exit 0
+                  fi
                   ;;
                 FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
                   echo "::error::XC CE site entered a terminal state: ${site_state}."
@@ -2675,22 +2847,54 @@ jobs:
 
           attempts=80
           sleep_seconds=15
-          cluster_info_log="$RUNNER_TEMP/module-3-vk8s-cluster-info.log"
           namespace_probe_log="$RUNNER_TEMP/module-3-vk8s-namespace.log"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s cluster-info >"$cluster_info_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE3_ENVIRONMENT}" -o name >"$namespace_probe_log" 2>&1; then
-              cat "$cluster_info_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE3_ENVIRONMENT}" -o name >"$namespace_probe_log" 2>&1; then
               cat "$namespace_probe_log"
               exit 0
             fi
 
             echo "vK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the module-3 vK8s API to become ready."
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${MODULE3_ENVIRONMENT}" -o name || true
+          exit 1
+
+      - name: Wait for vK8s functional readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path="$RUNNER_TEMP/module-3-vk8s-kubeconfig.yaml"
+          attempts=40
+          sleep_seconds=15
+          probe_namespace="${MODULE3_ENVIRONMENT}"
+          probe_configmap="api-probe-${GITHUB_RUN_ID:(-6)}"
+          configmap_apply_log="$RUNNER_TEMP/module-3-vk8s-configmap-apply.log"
+          configmap_get_log="$RUNNER_TEMP/module-3-vk8s-configmap-get.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >"$configmap_apply_log" 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap" -o name >"$configmap_get_log" 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap" --ignore-not-found >/dev/null 2>&1 || true
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              [[ -s "$configmap_apply_log" ]] && tail -n 5 "$configmap_apply_log"
+              [[ -s "$configmap_get_log" ]] && tail -n 5 "$configmap_get_log"
+              echo "vK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for module-3 vK8s functional readiness."
+          [[ -s "$configmap_apply_log" ]] && cat "$configmap_apply_log"
+          [[ -s "$configmap_get_log" ]] && cat "$configmap_get_log"
+          kubectl --kubeconfig "$kubeconfig_path" get namespace "$probe_namespace" -o yaml || true
           exit 1
 
       - name: Terraform init module 3
@@ -2771,6 +2975,40 @@ jobs:
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get deployments,svc -o wide
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" rollout status deployment/deals-server-deployment --timeout=10m
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get pods -o wide
+
+      - name: Wait for branch mK8s readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
+          attempts=40
+          sleep_seconds=15
+          namespace_probe_log="$RUNNER_TEMP/module-3-branch-namespace.log"
+          rollout_log="$RUNNER_TEMP/module-3-branch-wordpress-rollout.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$branch_kubeconfig_path" --request-timeout=10s get namespace "$branch_namespace" -o name >"$namespace_probe_log" 2>&1 && \
+              kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" rollout status deployment/wordpress-deployment --timeout=30s >"$rollout_log" 2>&1; then
+              cat "$namespace_probe_log"
+              cat "$rollout_log"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
+              [[ -s "$rollout_log" ]] && tail -n 5 "$rollout_log"
+              echo "Branch mK8s not ready yet for module 3 validations (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for branch mK8s readiness before module 3 validations."
+          [[ -s "$namespace_probe_log" ]] && cat "$namespace_probe_log"
+          [[ -s "$rollout_log" ]] && cat "$rollout_log"
+          kubectl --kubeconfig "$branch_kubeconfig_path" get namespace "$branch_namespace" -o yaml || true
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get deployments,pods -o wide || true
+          exit 1
 
       - name: Validate module 3 deals endpoint from branch
         shell: bash

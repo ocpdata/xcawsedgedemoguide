@@ -2,6 +2,7 @@ locals {
   raw_name        = lower(join("-", compact([var.project_prefix, var.site_name, "site-kubeconfig"])))
   generated_name  = substr(replace(local.raw_name, "/[^a-z0-9-]/", "-"), 0, 31)
   effective_name  = var.credential_name != "" ? var.credential_name : local.generated_name
+  role_namespaces = toset(compact(["system", trimspace(var.xc_namespace)]))
 }
 
 resource "volterra_service_credential" "site_kubeconfig" {
@@ -9,9 +10,13 @@ resource "volterra_service_credential" "site_kubeconfig" {
   name                    = local.effective_name
   service_credential_type = "SITE_GLOBAL_KUBE_CONFIG"
 
-  namespace_roles {
-    namespace = "system"
-    role      = var.service_credential_role
+  dynamic "namespace_roles" {
+    for_each = local.role_namespaces
+
+    content {
+      namespace = namespace_roles.value
+      role      = var.service_credential_role
+    }
   }
 
   site_kubeconfig {
