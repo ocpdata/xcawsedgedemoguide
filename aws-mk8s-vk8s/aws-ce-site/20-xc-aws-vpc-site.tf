@@ -102,22 +102,6 @@ resource "volterra_tf_params_action" "action_apply" {
   ]
 }
 
-resource "volterra_tf_params_action" "action_destroy" {
-  count            = var.manage_site_infrastructure && var.run_site_destroy_action ? 1 : 0
-  site_name        = volterra_aws_vpc_site.site[0].name
-  site_kind        = "aws_vpc_site"
-  action           = "destroy"
-  wait_for_action  = true
-  ignore_on_update = true
-
-  depends_on = [
-    volterra_aws_vpc_site.site,
-    aws_subnet.subnet_a,
-    aws_subnet.subnet_b,
-    aws_subnet.subnet_c
-  ]
-}
-
 output "xc_private_key" {
   value     = var.manage_site_infrastructure ? tls_private_key.key.private_key_pem : ""
   sensitive = true
