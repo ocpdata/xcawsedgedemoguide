@@ -887,6 +887,64 @@ jobs:
           echo "kubeconfig_path=$RUNNER_TEMP/mk8s-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
           echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
 
+      - name: Wait for destroy mK8s API readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          attempts=80
+          sleep_seconds=15
+          request_timeout=20s
+          nodes_probe_log="$RUNNER_TEMP/destroy-mk8s-nodes-probe.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get nodes -o name >"$nodes_probe_log" 2>&1; then
+              cat "$nodes_probe_log"
+              exit 0
+            fi
+
+            echo "Destroy mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+            [[ -s "$nodes_probe_log" ]] && tail -n 5 "$nodes_probe_log"
+            sleep "$sleep_seconds"
+          done
+
+          echo "::error::Timed out waiting for the destroy mK8s API server to become ready."
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get nodes -o wide || true
+          exit 1
+
+      - name: Wait for destroy mK8s functional readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          attempts=40
+          sleep_seconds=15
+          nodes_probe_log="$RUNNER_TEMP/destroy-mk8s-functional-nodes.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
+            echo "Destroy ready nodes: ${node_ready}"
+
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout=20s get nodes -o wide >"$nodes_probe_log" 2>&1 && \
+              [[ "$node_ready" -ge 1 ]]; then
+              cat "$nodes_probe_log"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              if [[ -s "$nodes_probe_log" ]]; then
+                tail -n 5 "$nodes_probe_log"
+              fi
+              echo "Destroy mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for destroy mK8s functional readiness."
+          [[ -s "$nodes_probe_log" ]] && cat "$nodes_probe_log"
+          kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
+          exit 1
+
       - name: Terraform init module 1
         shell: bash
         run: |
