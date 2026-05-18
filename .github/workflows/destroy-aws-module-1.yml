@@ -1014,7 +1014,22 @@ jobs:
           if [[ -z "$workspace_prefix" ]]; then
             workspace_prefix="xcawsedgedemo"
           fi
+          app_stack_name="aws-${PROJECT_PREFIX}-${XC_NAMESPACE}"
+          app_stack_mk8s_name="${app_stack_name}-mk8s"
           echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
+          echo "APP_STACK_NAME=${app_stack_name}" >> "$GITHUB_ENV"
+          echo "APP_STACK_MK8S_NAME=${app_stack_mk8s_name}" >> "$GITHUB_ENV"
+
+          configured_existing_mk8s="${TF_VAR_existing_mk8s_cluster_name:-}"
+          if [[ -z "$configured_existing_mk8s" || "$configured_existing_mk8s" == "$app_stack_mk8s_name" ]]; then
+            echo "TF_VAR_existing_mk8s_cluster_name=" >> "$GITHUB_ENV"
+            echo "DESTROY_APP_STACK_MK8S=true" >> "$GITHUB_ENV"
+            echo "Prerequisites destroy will manage stack-owned mK8s ${app_stack_mk8s_name}."
+          else
+            echo "DESTROY_APP_STACK_MK8S=false" >> "$GITHUB_ENV"
+            echo "REUSED_EXTERNAL_MK8S_NAME=${configured_existing_mk8s}" >> "$GITHUB_ENV"
+            echo "Prerequisites destroy will preserve reused external mK8s ${configured_existing_mk8s} because it does not match stack-owned name ${app_stack_mk8s_name}."
+          fi
 
       - name: Decode XC API credential
         shell: bash
@@ -1102,6 +1117,94 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/prerequisites destroy -auto-approve \
             -var="create_xc_namespace=${TF_VAR_create_xc_namespace}"
 
+      - name: Force cleanup residual XC App Stack objects
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          delete_xc_object() {
+            local resource_kind="$1"
+            local resource_name="$2"
+            local resource_label="$3"
+            local response_file="$RUNNER_TEMP/${resource_kind}-${resource_name}.json"
+            local endpoint="${api_root}/api/config/namespaces/system/${resource_kind}/${resource_name}"
+            local http_code
+            local delete_code
+
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            if [[ "$http_code" == "404" ]]; then
+              echo "${resource_label} ${resource_name} is already absent in XC."
+              return 0
+            fi
+
+            if [[ "$http_code" != "200" ]]; then
+              echo "::error::Unable to inspect ${resource_label} ${resource_name} in XC (HTTP ${http_code:-curl-error})."
+              [[ -s "$response_file" ]] && cat "$response_file"
+              return 1
+            fi
+
+            delete_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --request DELETE \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            if [[ "$delete_code" != "200" && "$delete_code" != "202" && "$delete_code" != "204" && "$delete_code" != "404" ]]; then
+              echo "::error::Unable to delete ${resource_label} ${resource_name} from XC (HTTP ${delete_code:-curl-error})."
+              [[ -s "$response_file" ]] && cat "$response_file"
+              return 1
+            fi
+
+            for attempt in $(seq 1 20); do
+              http_code="$(curl \
+                --silent \
+                --show-error \
+                --output "$response_file" \
+                --write-out '%{http_code}' \
+                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                --key "$RUNNER_TEMP/xc-api-key.pem" \
+                "$endpoint" || true)"
+
+              if [[ "$http_code" == "404" ]]; then
+                echo "${resource_label} ${resource_name} has been removed from XC."
+                return 0
+              fi
+
+              if [[ "$attempt" -eq 20 ]]; then
+                echo "::error::${resource_label} ${resource_name} still exists in XC after delete attempt."
+                [[ -s "$response_file" ]] && cat "$response_file"
+                return 1
+              fi
+
+              echo "${resource_label} ${resource_name} still exists in XC after delete attempt (HTTP ${http_code}); retrying in 15s (${attempt}/20)."
+              sleep 15
+            done
+          }
+
+          delete_xc_object "aws_vpc_sites" "$APP_STACK_NAME" "XC App Stack site"
+
+          if [[ "${DESTROY_APP_STACK_MK8S:-false}" == "true" ]]; then
+            delete_xc_object "k8s_clusters" "$APP_STACK_MK8S_NAME" "XC App Stack mK8s"
+          else
+            echo "Skipping XC mK8s delete because ${REUSED_EXTERNAL_MK8S_NAME} is configured as a reused external cluster."
+          fi
+
       - name: Write prerequisites destroy summary
         if: always()
         shell: bash
@@ -1113,7 +1216,12 @@ jobs:
             echo "- Scope: full-stack"
             echo "- Phase: prerequisites"
             echo "- Workspace: ${PREREQUISITES_WORKSPACE}"
+            echo "- App Stack site: ${APP_STACK_NAME}"
+            echo "- App Stack mK8s cleanup target: ${APP_STACK_MK8S_NAME}"
             echo "- XC namespace: ${XC_NAMESPACE}"
+            if [[ "${DESTROY_APP_STACK_MK8S:-false}" != "true" ]]; then
+              echo "- Preserved reused external mK8s: ${REUSED_EXTERNAL_MK8S_NAME}"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   destroy_kiosk_vm:
