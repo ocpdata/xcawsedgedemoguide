@@ -645,7 +645,7 @@ jobs:
           attempts=80
           sleep_seconds=15
           request_timeout=20s
-          namespace_probe_log="$RUNNER_TEMP/prereq-mk8s-namespace-probe.log"
+          readyz_probe_log="$RUNNER_TEMP/prereq-mk8s-readyz-probe.log"
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
@@ -654,18 +654,18 @@ jobs:
           site_response_file="$RUNNER_TEMP/prereq-mk8s-site-status-on-timeout.json"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
-              cat "$namespace_probe_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get --raw=/readyz >"$readyz_probe_log" 2>&1; then
+              cat "$readyz_probe_log"
               exit 0
             fi
 
             echo "Prerequisite mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-            [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
+            [[ -s "$readyz_probe_log" ]] && tail -n 5 "$readyz_probe_log"
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the prerequisite mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get --raw=/readyz || true
 
           http_code="$(curl \
             --silent \
@@ -699,27 +699,21 @@ jobs:
           kubeconfig_path='${{ steps.prereq_kubeconfig.outputs.kubeconfig_path }}'
           attempts=40
           sleep_seconds=15
-          probe_namespace='system'
-          probe_configmap="api-probe"
-          configmap_apply_log="$RUNNER_TEMP/prereq-mk8s-configmap-apply.log"
-          configmap_get_log="$RUNNER_TEMP/prereq-mk8s-configmap-get.log"
-          probe_configmap_name="${probe_configmap}-${GITHUB_RUN_ID:(-6)}"
+          readyz_probe_log="$RUNNER_TEMP/prereq-mk8s-functional-readyz.log"
 
           for attempt in $(seq 1 "$attempts"); do
             node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
             echo "Prerequisite ready nodes: ${node_ready}"
 
             if [[ "$node_ready" -ge 1 ]] && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap_name" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >"$configmap_apply_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap_name" -o name >"$configmap_get_log" 2>&1; then
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap_name" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=20s get --raw=/readyz >"$readyz_probe_log" 2>&1; then
+              cat "$readyz_probe_log"
               exit 0
             fi
 
             if [[ "$attempt" -lt "$attempts" ]]; then
               if [[ "$node_ready" -ge 1 ]]; then
-                [[ -s "$configmap_apply_log" ]] && tail -n 5 "$configmap_apply_log"
-                [[ -s "$configmap_get_log" ]] && tail -n 5 "$configmap_get_log"
+                [[ -s "$readyz_probe_log" ]] && tail -n 5 "$readyz_probe_log"
               fi
               echo "Prerequisite mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
               sleep "$sleep_seconds"
@@ -727,10 +721,9 @@ jobs:
           done
 
           echo "::error::Timed out waiting for prerequisite mK8s functional readiness."
-          [[ -s "$configmap_apply_log" ]] && cat "$configmap_apply_log"
-          [[ -s "$configmap_get_log" ]] && cat "$configmap_get_log"
+          [[ -s "$readyz_probe_log" ]] && cat "$readyz_probe_log"
           kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" get namespace "$probe_namespace" -o yaml || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=20s get --raw=/readyz || true
           exit 1
 
   module_1:
@@ -1026,7 +1019,7 @@ jobs:
           attempts=80
           sleep_seconds=15
           request_timeout=20s
-          namespace_probe_log="$RUNNER_TEMP/mk8s-namespace-probe.log"
+          readyz_probe_log="$RUNNER_TEMP/mk8s-readyz-probe.log"
           api_url='${{ secrets.XC_API_URL }}'
           api_root="${api_url%/}"
           api_root="${api_root%/api}"
@@ -1035,20 +1028,20 @@ jobs:
           site_response_file="$RUNNER_TEMP/mk8s-site-status-on-timeout.json"
 
           for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name >"$namespace_probe_log" 2>&1; then
-              cat "$namespace_probe_log"
+            if kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get --raw=/readyz >"$readyz_probe_log" 2>&1; then
+              cat "$readyz_probe_log"
               exit 0
             fi
 
             echo "mK8s API not ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-            if [[ -s "$namespace_probe_log" ]]; then
-              tail -n 5 "$namespace_probe_log"
+            if [[ -s "$readyz_probe_log" ]]; then
+              tail -n 5 "$readyz_probe_log"
             fi
             sleep "$sleep_seconds"
           done
 
           echo "::error::Timed out waiting for the mK8s API server to become ready."
-          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get namespace default -o name || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout="$request_timeout" get --raw=/readyz || true
 
           http_code="$(curl \
             --silent \
@@ -1082,27 +1075,21 @@ jobs:
           kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
           attempts=40
           sleep_seconds=15
-          probe_namespace='${{ needs.prerequisites.outputs.xc_namespace }}'
-          probe_configmap="api-probe"
-          configmap_apply_log="$RUNNER_TEMP/mk8s-configmap-apply.log"
-          configmap_get_log="$RUNNER_TEMP/mk8s-configmap-get.log"
-          probe_configmap_name="${probe_configmap}-${GITHUB_RUN_ID:(-6)}"
+          readyz_probe_log="$RUNNER_TEMP/mk8s-functional-readyz.log"
 
           for attempt in $(seq 1 "$attempts"); do
             node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
             echo "Ready nodes: ${node_ready}"
 
             if [[ "$node_ready" -ge 1 ]] && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap_name" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >"$configmap_apply_log" 2>&1 && \
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap_name" -o name >"$configmap_get_log" 2>&1; then
-              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap_name" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$kubeconfig_path" --request-timeout=20s get --raw=/readyz >"$readyz_probe_log" 2>&1; then
+              cat "$readyz_probe_log"
               exit 0
             fi
 
             if [[ "$attempt" -lt "$attempts" ]]; then
               if [[ "$node_ready" -ge 1 ]]; then
-                [[ -s "$configmap_apply_log" ]] && tail -n 5 "$configmap_apply_log"
-                [[ -s "$configmap_get_log" ]] && tail -n 5 "$configmap_get_log"
+                [[ -s "$readyz_probe_log" ]] && tail -n 5 "$readyz_probe_log"
               fi
               echo "mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
               sleep "$sleep_seconds"
@@ -1110,10 +1097,9 @@ jobs:
           done
 
           echo "::error::Timed out waiting for mK8s functional readiness."
-          [[ -s "$configmap_apply_log" ]] && cat "$configmap_apply_log"
-          [[ -s "$configmap_get_log" ]] && cat "$configmap_get_log"
+          [[ -s "$readyz_probe_log" ]] && cat "$readyz_probe_log"
           kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" get namespace "$probe_namespace" -o yaml || true
+          kubectl --kubeconfig "$kubeconfig_path" --request-timeout=20s get --raw=/readyz || true
           exit 1
 
       - name: Terraform init module 1
@@ -1166,6 +1152,44 @@ jobs:
             local http_code=""
             local delete_code=""
 
+            wait_for_xc_resource_absent() {
+              local resource_label="$1"
+              local resource_endpoint="$2"
+              local resource_response="$3"
+              local http_code=""
+
+              for wait_attempt in $(seq 1 20); do
+                http_code="$(curl \
+                  --silent \
+                  --show-error \
+                  --output "$resource_response" \
+                  --write-out '%{http_code}' \
+                  --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                  --key "$RUNNER_TEMP/xc-api-key.pem" \
+                  "$resource_endpoint" || true)"
+
+                if [[ "$http_code" == "404" ]]; then
+                  echo "XC ${resource_label} is now absent and can be recreated."
+                  return 0
+                fi
+
+                if [[ "$http_code" != "200" ]]; then
+                  echo "::error::Unable to confirm XC ${resource_label} deletion (HTTP ${http_code:-curl-error})."
+                  [[ -s "$resource_response" ]] && cat "$resource_response"
+                  exit 1
+                fi
+
+                if [[ "$wait_attempt" -lt 20 ]]; then
+                  echo "XC ${resource_label} still exists after delete request; waiting 15s (${wait_attempt}/20)."
+                  sleep 15
+                fi
+              done
+
+              echo "::error::XC ${resource_label} still exists after waiting for deletion."
+              [[ -s "$resource_response" ]] && cat "$resource_response"
+              exit 1
+            }
+
             echo "XC ${resource_label} origin pool ${pool_name} already exists outside Terraform state; deleting dependent load balancer and pool before retry."
             lb_http_code="$(curl \
               --silent \
@@ -1198,6 +1222,8 @@ jobs:
                 [[ -s "$lb_response" ]] && cat "$lb_response"
                 exit 1
               fi
+
+              wait_for_xc_resource_absent "${resource_label} load balancer ${lb_name}" "$lb_endpoint" "$lb_response"
             fi
 
             http_code="$(curl \
@@ -1231,6 +1257,8 @@ jobs:
                 [[ -s "$pool_response" ]] && cat "$pool_response"
                 exit 1
               fi
+
+              wait_for_xc_resource_absent "${resource_label} origin pool ${pool_name}" "$pool_endpoint" "$pool_response"
             fi
           }
 
@@ -1936,6 +1964,40 @@ jobs:
           echo "kubeconfig_path=$RUNNER_TEMP/module-2-branch-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
           echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
 
+      - name: Wait for branch mK8s readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
+          attempts=40
+          sleep_seconds=15
+          namespace_probe_log="$RUNNER_TEMP/module-2-branch-namespace.log"
+          rollout_log="$RUNNER_TEMP/module-2-branch-wordpress-rollout.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$branch_kubeconfig_path" --request-timeout=10s get namespace "$branch_namespace" -o name >"$namespace_probe_log" 2>&1 && \
+              kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" rollout status deployment/wordpress-deployment --timeout=30s >"$rollout_log" 2>&1; then
+              cat "$namespace_probe_log"
+              cat "$rollout_log"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
+              [[ -s "$rollout_log" ]] && tail -n 5 "$rollout_log"
+              echo "Branch mK8s not ready yet for module 2 (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for branch mK8s readiness before module 2 apply."
+          [[ -s "$namespace_probe_log" ]] && cat "$namespace_probe_log"
+          [[ -s "$rollout_log" ]] && cat "$rollout_log"
+          kubectl --kubeconfig "$branch_kubeconfig_path" get namespace "$branch_namespace" -o yaml || true
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get deployments,pods -o wide || true
+          exit 1
+
       - name: Terraform init CE foundations
         shell: bash
         run: |
@@ -2326,40 +2388,6 @@ jobs:
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE2_ENVIRONMENT}" rollout status deployment/inventory-server-deployment --timeout=10m
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE2_ENVIRONMENT}" get pods -o wide
 
-      - name: Wait for branch mK8s readiness
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
-          branch_namespace="${XC_NAMESPACE_OUTPUT}"
-          attempts=40
-          sleep_seconds=15
-          namespace_probe_log="$RUNNER_TEMP/module-2-branch-namespace.log"
-          rollout_log="$RUNNER_TEMP/module-2-branch-wordpress-rollout.log"
-
-          for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$branch_kubeconfig_path" --request-timeout=10s get namespace "$branch_namespace" -o name >"$namespace_probe_log" 2>&1 && \
-              kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" rollout status deployment/wordpress-deployment --timeout=30s >"$rollout_log" 2>&1; then
-              cat "$namespace_probe_log"
-              cat "$rollout_log"
-              exit 0
-            fi
-
-            if [[ "$attempt" -lt "$attempts" ]]; then
-              [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
-              [[ -s "$rollout_log" ]] && tail -n 5 "$rollout_log"
-              echo "Branch mK8s not ready yet for module 2 validations (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-              sleep "$sleep_seconds"
-            fi
-          done
-
-          echo "::error::Timed out waiting for branch mK8s readiness before module 2 validations."
-          [[ -s "$namespace_probe_log" ]] && cat "$namespace_probe_log"
-          [[ -s "$rollout_log" ]] && cat "$rollout_log"
-          kubectl --kubeconfig "$branch_kubeconfig_path" get namespace "$branch_namespace" -o yaml || true
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get deployments,pods -o wide || true
-          exit 1
-
       - name: Validate module 2 TCP connectivity from branch
         shell: bash
         run: |
@@ -2687,6 +2715,40 @@ jobs:
           echo "kubeconfig_path=$RUNNER_TEMP/module-3-branch-kubeconfig.yaml" >> "$GITHUB_OUTPUT"
           echo "service_credential_role=${selected_role}" >> "$GITHUB_OUTPUT"
 
+      - name: Wait for branch mK8s readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
+          branch_namespace="${XC_NAMESPACE_OUTPUT}"
+          attempts=40
+          sleep_seconds=15
+          namespace_probe_log="$RUNNER_TEMP/module-3-branch-namespace.log"
+          rollout_log="$RUNNER_TEMP/module-3-branch-wordpress-rollout.log"
+
+          for attempt in $(seq 1 "$attempts"); do
+            if kubectl --kubeconfig "$branch_kubeconfig_path" --request-timeout=10s get namespace "$branch_namespace" -o name >"$namespace_probe_log" 2>&1 && \
+              kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" rollout status deployment/wordpress-deployment --timeout=30s >"$rollout_log" 2>&1; then
+              cat "$namespace_probe_log"
+              cat "$rollout_log"
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt "$attempts" ]]; then
+              [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
+              [[ -s "$rollout_log" ]] && tail -n 5 "$rollout_log"
+              echo "Branch mK8s not ready yet for module 3 (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "::error::Timed out waiting for branch mK8s readiness before module 3 apply."
+          [[ -s "$namespace_probe_log" ]] && cat "$namespace_probe_log"
+          [[ -s "$rollout_log" ]] && cat "$rollout_log"
+          kubectl --kubeconfig "$branch_kubeconfig_path" get namespace "$branch_namespace" -o yaml || true
+          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get deployments,pods -o wide || true
+          exit 1
+
       - name: Terraform init CE foundations
         shell: bash
         run: |
@@ -2975,40 +3037,6 @@ jobs:
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get deployments,svc -o wide
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" rollout status deployment/deals-server-deployment --timeout=10m
           kubectl --kubeconfig "$kubeconfig_path" -n "${MODULE3_ENVIRONMENT}" get pods -o wide
-
-      - name: Wait for branch mK8s readiness
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch_kubeconfig_path='${{ steps.branch_kubeconfig.outputs.kubeconfig_path }}'
-          branch_namespace="${XC_NAMESPACE_OUTPUT}"
-          attempts=40
-          sleep_seconds=15
-          namespace_probe_log="$RUNNER_TEMP/module-3-branch-namespace.log"
-          rollout_log="$RUNNER_TEMP/module-3-branch-wordpress-rollout.log"
-
-          for attempt in $(seq 1 "$attempts"); do
-            if kubectl --kubeconfig "$branch_kubeconfig_path" --request-timeout=10s get namespace "$branch_namespace" -o name >"$namespace_probe_log" 2>&1 && \
-              kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" rollout status deployment/wordpress-deployment --timeout=30s >"$rollout_log" 2>&1; then
-              cat "$namespace_probe_log"
-              cat "$rollout_log"
-              exit 0
-            fi
-
-            if [[ "$attempt" -lt "$attempts" ]]; then
-              [[ -s "$namespace_probe_log" ]] && tail -n 5 "$namespace_probe_log"
-              [[ -s "$rollout_log" ]] && tail -n 5 "$rollout_log"
-              echo "Branch mK8s not ready yet for module 3 validations (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
-              sleep "$sleep_seconds"
-            fi
-          done
-
-          echo "::error::Timed out waiting for branch mK8s readiness before module 3 validations."
-          [[ -s "$namespace_probe_log" ]] && cat "$namespace_probe_log"
-          [[ -s "$rollout_log" ]] && cat "$rollout_log"
-          kubectl --kubeconfig "$branch_kubeconfig_path" get namespace "$branch_namespace" -o yaml || true
-          kubectl --kubeconfig "$branch_kubeconfig_path" -n "$branch_namespace" get deployments,pods -o wide || true
-          exit 1
 
       - name: Validate module 3 deals endpoint from branch
         shell: bash
