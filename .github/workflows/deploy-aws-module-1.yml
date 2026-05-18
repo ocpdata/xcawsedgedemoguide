@@ -202,6 +202,45 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/prerequisites init \
             -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
 
+      - name: Detect XC cloud credential state
+        id: cloud_credential_state
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          cloud_credential_name="${TF_VAR_cloud_credential_name}"
+          cloud_credential_endpoint="${api_root}/api/config/namespaces/system/cloud_credentialss/${cloud_credential_name}"
+          http_code="$(curl \
+            --silent \
+            --show-error \
+            --output "$RUNNER_TEMP/prerequisites-cloud-credential.json" \
+            --write-out '%{http_code}' \
+            --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+            --key "$RUNNER_TEMP/xc-api-key.pem" \
+            "$cloud_credential_endpoint" || true)"
+
+          case "$http_code" in
+            200)
+              echo "TF_VAR_create_cloud_credential=false" >> "$GITHUB_ENV"
+              echo "create_cloud_credential=false" >> "$GITHUB_OUTPUT"
+              echo "XC cloud credential ${cloud_credential_name} already exists; prerequisites will reuse it."
+              ;;
+            404)
+              echo "TF_VAR_create_cloud_credential=true" >> "$GITHUB_ENV"
+              echo "create_cloud_credential=true" >> "$GITHUB_OUTPUT"
+              echo "XC cloud credential ${cloud_credential_name} does not exist yet; prerequisites will create it."
+              ;;
+            *)
+              echo "::error::Unable to determine whether XC cloud credential ${cloud_credential_name} exists (HTTP ${http_code:-curl-error})."
+              if [[ -s "$RUNNER_TEMP/prerequisites-cloud-credential.json" ]]; then
+                cat "$RUNNER_TEMP/prerequisites-cloud-credential.json"
+              fi
+              exit 1
+              ;;
+          esac
+
       - name: Pre-create XC managed k8s cluster
         shell: bash
         run: |
