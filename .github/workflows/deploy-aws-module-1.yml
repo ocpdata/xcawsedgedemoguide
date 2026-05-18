@@ -56,7 +56,6 @@ jobs:
       TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_MK8S }}
-      TF_VAR_existing_mk8s_cluster_name: ${{ vars.EXISTING_MK8S_CLUSTER_NAME }}
       TF_VAR_windows_admin_password: ${{ vars.PASSWORD_VM_WINDOWS }}
       TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
       TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
@@ -116,6 +115,7 @@ jobs:
           echo "workspace_prefix=$workspace_prefix" >> "$GITHUB_OUTPUT"
           echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
           echo "MODULE1_WORKSPACE=${workspace_prefix}-module-1" >> "$GITHUB_ENV"
+          echo "TF_VAR_existing_mk8s_cluster_name=" >> "$GITHUB_ENV"
           echo "TF_VAR_cloud_credential_name=${workspace_prefix}-aws-cred" >> "$GITHUB_ENV"
           echo "TF_VAR_create_cloud_credential=true" >> "$GITHUB_ENV"
           echo "TF_VAR_kiosk_key_pair_name=${workspace_prefix}-kiosk-key-${GITHUB_RUN_ID:(-8)}" >> "$GITHUB_ENV"

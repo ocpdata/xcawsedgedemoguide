@@ -966,7 +966,6 @@ jobs:
       TF_VAR_xc_namespace: ${{ vars.XC_NAMESPACE }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_vpc_cidr: ${{ vars.VPC_CIDR_MK8S }}
-      TF_VAR_existing_mk8s_cluster_name: ${{ vars.EXISTING_MK8S_CLUSTER_NAME }}
       TF_VAR_aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
       TF_VAR_aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
       TF_VAR_xc_api_url: ${{ secrets.XC_API_URL }}
@@ -1019,17 +1018,9 @@ jobs:
           echo "PREREQUISITES_WORKSPACE=${workspace_prefix}-prerequisites" >> "$GITHUB_ENV"
           echo "APP_STACK_NAME=${app_stack_name}" >> "$GITHUB_ENV"
           echo "APP_STACK_MK8S_NAME=${app_stack_mk8s_name}" >> "$GITHUB_ENV"
-
-          configured_existing_mk8s="${TF_VAR_existing_mk8s_cluster_name:-}"
-          if [[ -z "$configured_existing_mk8s" || "$configured_existing_mk8s" == "$app_stack_mk8s_name" ]]; then
-            echo "TF_VAR_existing_mk8s_cluster_name=" >> "$GITHUB_ENV"
-            echo "DESTROY_APP_STACK_MK8S=true" >> "$GITHUB_ENV"
-            echo "Prerequisites destroy will manage stack-owned mK8s ${app_stack_mk8s_name}."
-          else
-            echo "DESTROY_APP_STACK_MK8S=false" >> "$GITHUB_ENV"
-            echo "REUSED_EXTERNAL_MK8S_NAME=${configured_existing_mk8s}" >> "$GITHUB_ENV"
-            echo "Prerequisites destroy will preserve reused external mK8s ${configured_existing_mk8s} because it does not match stack-owned name ${app_stack_mk8s_name}."
-          fi
+          echo "TF_VAR_existing_mk8s_cluster_name=" >> "$GITHUB_ENV"
+          echo "DESTROY_APP_STACK_MK8S=true" >> "$GITHUB_ENV"
+          echo "Prerequisites destroy will manage stack-owned mK8s ${app_stack_mk8s_name}."
 
       - name: Decode XC API credential
         shell: bash
@@ -1198,12 +1189,7 @@ jobs:
           }
 
           delete_xc_object "aws_vpc_sites" "$APP_STACK_NAME" "XC App Stack site"
-
-          if [[ "${DESTROY_APP_STACK_MK8S:-false}" == "true" ]]; then
-            delete_xc_object "k8s_clusters" "$APP_STACK_MK8S_NAME" "XC App Stack mK8s"
-          else
-            echo "Skipping XC mK8s delete because ${REUSED_EXTERNAL_MK8S_NAME} is configured as a reused external cluster."
-          fi
+          delete_xc_object "k8s_clusters" "$APP_STACK_MK8S_NAME" "XC App Stack mK8s"
 
       - name: Write prerequisites destroy summary
         if: always()
@@ -1219,9 +1205,6 @@ jobs:
             echo "- App Stack site: ${APP_STACK_NAME}"
             echo "- App Stack mK8s cleanup target: ${APP_STACK_MK8S_NAME}"
             echo "- XC namespace: ${XC_NAMESPACE}"
-            if [[ "${DESTROY_APP_STACK_MK8S:-false}" != "true" ]]; then
-              echo "- Preserved reused external mK8s: ${REUSED_EXTERNAL_MK8S_NAME}"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   destroy_kiosk_vm:
