@@ -418,6 +418,9 @@ jobs:
                   echo "XC managed k8s cluster ${mk8s_name} still not visible after recreation (HTTP ${http_code}); retrying in 15s (${mk8s_attempt}/20)."
                   sleep 15
                 done
+
+                echo "Allowing XC managed k8s cluster ${mk8s_name} extra time to register before retrying AwsVpcSite creation."
+                sleep 180
               fi
             fi
 
