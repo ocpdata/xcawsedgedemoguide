@@ -1158,6 +1158,13 @@ jobs:
           apply_log="$RUNNER_TEMP/module-1-apply.log"
           attempts=6
           sleep_seconds=45
+          namespace='${{ needs.prerequisites.outputs.xc_namespace }}'
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+          recommendations_pool_name="${PROJECT_PREFIX}-${namespace}-recommendations-pool"
+          recommendations_pool_endpoint="${api_root}/api/config/namespaces/${namespace}/origin_pools/${recommendations_pool_name}"
+          recommendations_pool_response="$RUNNER_TEMP/module-1-recommendations-pool.json"
 
           for attempt in $(seq 1 "$attempts"); do
             if terraform -chdir=aws-mk8s-vk8s/module-1 apply -auto-approve -parallelism=1 \
@@ -1173,9 +1180,51 @@ jobs:
               exit 0
             fi
 
+            if grep -q "error creating OriginPool" "$apply_log" && grep -q "Object already exists" "$apply_log"; then
+              echo "XC recommendations origin pool ${recommendations_pool_name} already exists outside Terraform state; deleting it before retry."
+              http_code="$(curl \
+                --silent \
+                --show-error \
+                --output "$recommendations_pool_response" \
+                --write-out '%{http_code}' \
+                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                --key "$RUNNER_TEMP/xc-api-key.pem" \
+                "$recommendations_pool_endpoint" || true)"
+
+              if [[ "$http_code" != "200" && "$http_code" != "404" ]]; then
+                echo "::error::Unable to inspect existing XC recommendations origin pool ${recommendations_pool_name} (HTTP ${http_code:-curl-error})."
+                [[ -s "$recommendations_pool_response" ]] && cat "$recommendations_pool_response"
+                exit 1
+              fi
+
+              if [[ "$http_code" == "200" ]]; then
+                delete_code="$(curl \
+                  --silent \
+                  --show-error \
+                  --output "$recommendations_pool_response" \
+                  --write-out '%{http_code}' \
+                  --request DELETE \
+                  --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                  --key "$RUNNER_TEMP/xc-api-key.pem" \
+                  "$recommendations_pool_endpoint" || true)"
+
+                if [[ "$delete_code" != "200" && "$delete_code" != "202" && "$delete_code" != "204" && "$delete_code" != "404" ]]; then
+                  echo "::error::Unable to delete stale XC recommendations origin pool ${recommendations_pool_name} (HTTP ${delete_code:-curl-error})."
+                  [[ -s "$recommendations_pool_response" ]] && cat "$recommendations_pool_response"
+                  exit 1
+                fi
+              fi
+            fi
+
             cat "$apply_log"
             if grep -Fq "the server is currently unable to handle the request" "$apply_log" && [[ "$attempt" -lt "$attempts" ]]; then
               echo "Transient mK8s API error during module 1 apply (attempt ${attempt}/${attempts}); retrying in ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+              continue
+            fi
+
+            if grep -q "error creating OriginPool" "$apply_log" && grep -q "Object already exists" "$apply_log" && [[ "$attempt" -lt "$attempts" ]]; then
+              echo "Recovered stale XC recommendations origin pool conflict during module 1 apply (attempt ${attempt}/${attempts}); retrying in ${sleep_seconds}s"
               sleep "$sleep_seconds"
               continue
             fi

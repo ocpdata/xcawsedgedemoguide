@@ -6,7 +6,9 @@ locals {
     namespace    = var.xc_namespace
     kiosk_domain = local.kiosk_domain
   })
-  kiosk_objects = split("\n---\n", local.kiosk_manifest)
+  kiosk_objects          = split("\n---\n", local.kiosk_manifest)
+  kiosk_namespace_object = local.kiosk_objects[0]
+  kiosk_workload_objects = slice(local.kiosk_objects, 1, length(local.kiosk_objects))
 }
 
 resource "volterra_namespace" "app_namespace" {
@@ -21,9 +23,17 @@ data "volterra_namespace" "app_namespace_existing" {
   name = var.xc_namespace
 }
 
-resource "kubectl_manifest" "kiosk" {
-  count     = length(local.kiosk_objects)
-  yaml_body = local.kiosk_objects[count.index]
+resource "kubectl_manifest" "kiosk_namespace" {
+  yaml_body = local.kiosk_namespace_object
+
+  depends_on = [volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
+}
+
+resource "kubectl_manifest" "kiosk_workload" {
+  count     = length(local.kiosk_workload_objects)
+  yaml_body = local.kiosk_workload_objects[count.index]
+
+  depends_on = [kubectl_manifest.kiosk_namespace]
 }
 
 resource "volterra_http_loadbalancer" "kiosk" {
@@ -96,7 +106,7 @@ resource "volterra_origin_pool" "kiosk" {
   endpoint_selection     = "LOCAL_PREFERRED"
   loadbalancer_algorithm = "LB_OVERRIDE"
 
-  depends_on = [kubectl_manifest.kiosk, volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
+  depends_on = [kubectl_manifest.kiosk_workload, volterra_namespace.app_namespace, data.volterra_namespace.app_namespace_existing]
 }
 
 resource "volterra_http_loadbalancer" "recommendations" {
