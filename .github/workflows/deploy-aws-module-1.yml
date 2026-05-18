@@ -693,52 +693,38 @@ jobs:
           fi
           exit 1
 
-      - name: Wait for prerequisite mK8s control plane health
+      - name: Wait for prerequisite mK8s functional readiness
         shell: bash
         run: |
           set -euo pipefail
           kubeconfig_path='${{ steps.prereq_kubeconfig.outputs.kubeconfig_path }}'
           attempts=40
           sleep_seconds=15
+          probe_namespace="prereq-probe-${GITHUB_RUN_ID:(-6)}"
+          probe_configmap="api-probe"
 
           for attempt in $(seq 1 "$attempts"); do
             node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
-            etcd_phase="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pod etcd-0 -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-            etcd_ready="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pod etcd-0 -o jsonpath='{range .status.containerStatuses[*]}{.ready}{" "}{end}' 2>/dev/null || true)"
-            phobos_summary="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 --no-headers 2>/dev/null || true)"
-            phobos_running="$(printf '%s\n' "$phobos_summary" | awk '$3 == "Running" && $2 ~ /^2\/2$/ {count++} END {print count+0}')"
-
             echo "Prerequisite ready nodes: ${node_ready}"
-            echo "Prerequisite etcd-0 phase: ${etcd_phase:-missing} | containers ready: ${etcd_ready:-unknown}"
-            if [[ -n "$phobos_summary" ]]; then
-              echo "$phobos_summary"
-            else
-              echo "No prerequisite phobos1 pods reported yet."
-            fi
 
-            if [[ "$node_ready" -ge 1 && "$etcd_phase" == "Running" && "$etcd_ready" == *"true true"* ]]; then
-              if [[ "$phobos_running" -lt 1 ]]; then
-                echo "Prerequisite phobos1 is not fully running yet; continuing because the API server and etcd are healthy."
-              fi
+            if [[ "$node_ready" -ge 1 ]] && \
+              kubectl --kubeconfig "$kubeconfig_path" create namespace "$probe_namespace" --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap" -o name >/dev/null 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$kubeconfig_path" delete namespace "$probe_namespace" --ignore-not-found >/dev/null 2>&1 || true
               exit 0
             fi
 
             if [[ "$attempt" -lt "$attempts" ]]; then
-              echo "Prerequisite mK8s control plane not healthy yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              echo "Prerequisite mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
               sleep "$sleep_seconds"
             fi
           done
 
-          echo "::error::Timed out waiting for prerequisite ves-system pods to become healthy."
+          echo "::error::Timed out waiting for prerequisite mK8s functional readiness."
           kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pod etcd-0 || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pvc data-etcd-0 || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 -o wide || true
-          phobos_pod="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-          if [[ -n "$phobos_pod" ]]; then
-            kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pod "$phobos_pod" || true
-          fi
+          kubectl --kubeconfig "$kubeconfig_path" get namespace default -o yaml || true
           exit 1
 
   module_1:
@@ -1090,52 +1076,38 @@ jobs:
           fi
           exit 1
 
-      - name: Wait for mK8s control plane health
+      - name: Wait for mK8s functional readiness
         shell: bash
         run: |
           set -euo pipefail
           kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
           attempts=40
           sleep_seconds=15
+          probe_namespace="module1-probe-${GITHUB_RUN_ID:(-6)}"
+          probe_configmap="api-probe"
 
           for attempt in $(seq 1 "$attempts"); do
             node_ready="$(kubectl --kubeconfig "$kubeconfig_path" get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {count++} END {print count+0}')"
-            etcd_phase="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pod etcd-0 -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-            etcd_ready="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pod etcd-0 -o jsonpath='{range .status.containerStatuses[*]}{.ready}{" "}{end}' 2>/dev/null || true)"
-            phobos_summary="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 --no-headers 2>/dev/null || true)"
-            phobos_running="$(printf '%s\n' "$phobos_summary" | awk '$3 == "Running" && $2 ~ /^2\/2$/ {count++} END {print count+0}')"
-
             echo "Ready nodes: ${node_ready}"
-            echo "etcd-0 phase: ${etcd_phase:-missing} | containers ready: ${etcd_ready:-unknown}"
-            if [[ -n "$phobos_summary" ]]; then
-              echo "$phobos_summary"
-            else
-              echo "No phobos1 pods reported yet."
-            fi
 
-            if [[ "$node_ready" -ge 1 && "$etcd_phase" == "Running" && "$etcd_ready" == *"true true"* ]]; then
-              if [[ "$phobos_running" -lt 1 ]]; then
-                echo "phobos1 is not fully running yet; continuing because the API server and etcd are healthy."
-              fi
+            if [[ "$node_ready" -ge 1 ]] && \
+              kubectl --kubeconfig "$kubeconfig_path" create namespace "$probe_namespace" --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" create configmap "$probe_configmap" --from-literal=probe=ok --dry-run=client -o yaml | kubectl --kubeconfig "$kubeconfig_path" apply -f - >/dev/null 2>&1 && \
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" get configmap "$probe_configmap" -o name >/dev/null 2>&1; then
+              kubectl --kubeconfig "$kubeconfig_path" -n "$probe_namespace" delete configmap "$probe_configmap" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$kubeconfig_path" delete namespace "$probe_namespace" --ignore-not-found >/dev/null 2>&1 || true
               exit 0
             fi
 
             if [[ "$attempt" -lt "$attempts" ]]; then
-              echo "mK8s control plane not healthy yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
+              echo "mK8s not functionally ready yet (attempt ${attempt}/${attempts}); waiting ${sleep_seconds}s"
               sleep "$sleep_seconds"
             fi
           done
 
-          echo "::error::Timed out waiting for critical ves-system pods to become healthy."
+          echo "::error::Timed out waiting for mK8s functional readiness."
           kubectl --kubeconfig "$kubeconfig_path" get nodes -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -o wide || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pod etcd-0 || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pvc data-etcd-0 || true
-          kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 -o wide || true
-          phobos_pod="$(kubectl --kubeconfig "$kubeconfig_path" -n ves-system get pods -l name=phobos1 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-          if [[ -n "$phobos_pod" ]]; then
-            kubectl --kubeconfig "$kubeconfig_path" -n ves-system describe pod "$phobos_pod" || true
-          fi
+          kubectl --kubeconfig "$kubeconfig_path" get namespace default -o yaml || true
           exit 1
 
       - name: Terraform init module 1
