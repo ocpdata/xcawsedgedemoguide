@@ -332,6 +332,24 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/module-1 init \
             -backend-config="$RUNNER_TEMP/second-branch-module-1.backend.hcl"
 
+      - name: Preserve democasos namespace in second branch module 1 state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.derive_second_branch.outputs.second_xc_namespace }}" != "democasos" ]]; then
+            exit 0
+          fi
+
+          state_list_file="$RUNNER_TEMP/second-branch-module-1-state.txt"
+          terraform -chdir=aws-mk8s-vk8s/module-1 state list > "$state_list_file"
+
+          if grep -q '^volterra_namespace\.app_namespace\[0\]$' "$state_list_file"; then
+            terraform -chdir=aws-mk8s-vk8s/module-1 state rm 'volterra_namespace.app_namespace[0]'
+            echo "Preserved XC namespace democasos by removing volterra_namespace.app_namespace[0] from the second-branch module-1 Terraform state."
+          else
+            echo "XC namespace democasos is not managed in the second-branch module-1 Terraform state."
+          fi
+
       - name: Remove module 1 kubectl manifests from state when site is already gone
         if: ${{ steps.detect_site.outputs.site_exists != 'true' }}
         shell: bash
@@ -453,6 +471,24 @@ jobs:
           EOF
           terraform -chdir=aws-mk8s-vk8s/prerequisites init \
             -backend-config="$RUNNER_TEMP/second-branch-prerequisites.backend.hcl"
+
+      - name: Preserve democasos namespace in second branch prerequisites state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.derive_second_branch.outputs.second_xc_namespace }}" != "democasos" ]]; then
+            exit 0
+          fi
+
+          state_list_file="$RUNNER_TEMP/second-branch-prerequisites-state.txt"
+          terraform -chdir=aws-mk8s-vk8s/prerequisites state list > "$state_list_file"
+
+          if grep -q '^volterra_namespace\.app_namespace\[0\]$' "$state_list_file"; then
+            terraform -chdir=aws-mk8s-vk8s/prerequisites state rm 'volterra_namespace.app_namespace[0]'
+            echo "Preserved XC namespace democasos by removing volterra_namespace.app_namespace[0] from the second-branch prerequisites Terraform state."
+          else
+            echo "XC namespace democasos is not managed in the second-branch prerequisites Terraform state."
+          fi
 
       - name: Terraform destroy second branch prerequisites
         shell: bash

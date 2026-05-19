@@ -958,6 +958,24 @@ jobs:
           terraform -chdir=aws-mk8s-vk8s/module-1 init \
             -backend-config="$RUNNER_TEMP/module-1.backend.hcl"
 
+      - name: Preserve democasos namespace in module 1 state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${XC_NAMESPACE}" != "democasos" ]]; then
+            exit 0
+          fi
+
+          state_list_file="$RUNNER_TEMP/module-1-state.txt"
+          terraform -chdir=aws-mk8s-vk8s/module-1 state list > "$state_list_file"
+
+          if grep -q '^volterra_namespace\.app_namespace\[0\]$' "$state_list_file"; then
+            terraform -chdir=aws-mk8s-vk8s/module-1 state rm 'volterra_namespace.app_namespace[0]'
+            echo "Preserved XC namespace ${XC_NAMESPACE} by removing volterra_namespace.app_namespace[0] from the module-1 Terraform state."
+          else
+            echo "XC namespace ${XC_NAMESPACE} is not managed in the module-1 Terraform state."
+          fi
+
       - name: Terraform destroy module 1
         shell: bash
         run: |
@@ -1158,6 +1176,24 @@ jobs:
           EOF
           terraform -chdir=aws-mk8s-vk8s/prerequisites init \
             -backend-config="$RUNNER_TEMP/prerequisites.backend.hcl"
+
+      - name: Preserve democasos namespace in prerequisites state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${XC_NAMESPACE}" != "democasos" ]]; then
+            exit 0
+          fi
+
+          state_list_file="$RUNNER_TEMP/prerequisites-state.txt"
+          terraform -chdir=aws-mk8s-vk8s/prerequisites state list > "$state_list_file"
+
+          if grep -q '^volterra_namespace\.app_namespace\[0\]$' "$state_list_file"; then
+            terraform -chdir=aws-mk8s-vk8s/prerequisites state rm 'volterra_namespace.app_namespace[0]'
+            echo "Preserved XC namespace ${XC_NAMESPACE} by removing volterra_namespace.app_namespace[0] from the prerequisites Terraform state."
+          else
+            echo "XC namespace ${XC_NAMESPACE} is not managed in the prerequisites Terraform state."
+          fi
 
       - name: Terraform destroy prerequisites
         shell: bash

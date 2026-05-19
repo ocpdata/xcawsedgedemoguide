@@ -68,11 +68,47 @@ Recibe un input manual llamado `deployment_stage`, con estas opciones:
 
 Actualmente estan implementadas las etapas `module-1`, `module-2` y `module-3`. Toda la configuracion de infraestructura sigue saliendo de variables y secretos del repositorio.
 
+## Controles operativos actuales del workflow principal
+
+La version actual de [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) no se limita a ejecutar `terraform apply` por etapa. Tambien incorpora controles para reducir reprovisionamientos innecesarios y para validar el laboratorio por el mismo camino que usan las aplicaciones.
+
+En terminos operativos, hoy el workflow principal hace esto:
+
+- usa `concurrency` a nivel de workflow para evitar ejecuciones simultaneas sobre el mismo `deployment_stage`, namespace y conjunto de workspaces remotos
+- detecta y reutiliza recursos XC ya existentes cuando corresponde, incluyendo namespace del branch, cloud credential, mK8s existente, namespace online, virtual sites, vK8s y load balancers u origin pools de `module-2` y `module-3`
+- normaliza `RECOMMENDATIONS_ORIGIN_DNS` y `RECOMMENDATIONS_ORIGIN_PORT` para que Terraform, las validaciones y la configuracion de WordPress trabajen con el mismo origen efectivo
+- consulta el estado detallado de los sites de XC durante las esperas de readiness y registra un resumen de estado util para troubleshooting en lugar de depender solo de timeouts ciegos
+- genera credenciales temporales de kubeconfig para mK8s y vK8s, y al final intenta limpiarlas para no dejar credenciales efimeras vivas despues de cada ejecucion
+- configura automaticamente los plugins BuyTime dentro de WordPress durante `module-1`, `module-2` y `module-3`, en vez de dejar configuracion manual posterior
+- valida `module-2` y `module-3` por el camino funcional real: comprobacion TCP hacia inventario, validacion del plugin de sincronizacion, `curl` a `/health` del servicio de deals desde el branch y validacion del plugin de Lightning Deals
+- escribe un resumen operativo por etapa en `GITHUB_STEP_SUMMARY`, tanto para el branch principal como para el CE site y los modulos online
+
+Esto hace que el workflow staged funcione como una orquestacion de deploy con criterios de reuse, validacion funcional y cierre operativo, no solo como una secuencia de aprovisionamiento de infraestructura.
+
+## Workflow de destroy del stack principal
+
+Como complemento del deploy staged, el repositorio incluye tambien el workflow [.github/workflows/destroy-aws-module-1.yml](.github/workflows/destroy-aws-module-1.yml) para desmontar el stack principal. Ese workflow admite dos modos de ejecucion manual:
+
+- `full-stack`: destruye secuencialmente `module-3`, `module-2`, el stack de CE, `module-1` y finalmente `prerequisites`
+- `kiosk-vm-only`: destruye solo la VM Windows kiosk dentro del workspace de `prerequisites`
+
+En la version actual, este destroy conserva explicitamente el namespace `democasos` aunque los workspaces de `module-1` o `prerequisites` lo hubieran creado originalmente. Antes de ejecutar `terraform destroy`, el workflow elimina `volterra_namespace.app_namespace[0]` del state cuando `XC_NAMESPACE == democasos`, de modo que Terraform siga desmontando el resto del stack sin intentar borrar ese namespace en XC.
+
+Ademas, el destroy reutiliza la misma normalizacion efectiva de `RECOMMENDATIONS_ORIGIN_DNS` y `RECOMMENDATIONS_ORIGIN_PORT` que usa el deploy, de forma que `module-1` se destruya con el mismo origen que quedo registrado en Terraform y en la configuracion operativa de WordPress.
+
 ## Workflow adicional para segunda sucursal
 
 Ademas del workflow principal, el repositorio incluye el workflow [.github/workflows/deploy-aws-second-branch.yml](.github/workflows/deploy-aws-second-branch.yml) para desplegar una segunda sucursal Retail Branch sin modificar el workflow staged principal.
 
+La version actual de ese deploy incorpora guardas operativas adicionales para hacerlo mas predecible cuando se relanza sobre el mismo laboratorio:
+
+- usa `concurrency` para evitar ejecuciones concurrentes sobre el mismo namespace derivado y los mismos workspaces remotos
+- exige que la sucursal primaria tenga un App Stack site realmente sano antes de crear la segunda, en vez de tolerar estados no legibles o ambiguos
+- valida el Recommendation Service por el camino real de aplicacion desde WordPress dentro de la segunda sucursal, no solo con un `curl` externo desde el runner de GitHub Actions
+
 Como complemento, tambien existe el workflow [.github/workflows/destroy-aws-second-branch.yml](.github/workflows/destroy-aws-second-branch.yml) para desmontar esa sucursal derivada sin afectar la sucursal primaria ni el workflow staged principal. En su forma actual, este destroy no pide inputs manuales: deriva el namespace `-b`, reutiliza los mismos workspaces remotos generados para la segunda sucursal y ejecuta un `terraform destroy` completo sobre `module-1` y `prerequisites`.
+
+Igual que en el destroy del stack principal, este workflow preserva el namespace `democasos` si llegara a coincidir con el namespace objetivo. Para eso, antes de destruir `module-1` o `prerequisites`, saca `volterra_namespace.app_namespace[0]` del state cuando el namespace derivado sea `democasos`, evitando que Terraform intente borrarlo en XC mientras desmonta el resto de la sucursal.
 
 Ese workflow asume que [.github/workflows/deploy-aws-module-1.yml](.github/workflows/deploy-aws-module-1.yml) ya se ejecuto correctamente para la sucursal primaria y reutiliza los mismos modulos existentes bajo `aws-mk8s-vk8s/`: `namespace-probe`, `prerequisites`, `kubeconfig` y `module-1`.
 
@@ -82,7 +118,7 @@ Su comportamiento principal es este:
 - deduce la segunda sucursal reemplazando el sufijo `-a` de `XC_NAMESPACE` por `-b`
 - deduce el CIDR del segundo branch a partir de `VPC_CIDR_MK8S`, incrementando el segundo octeto y manteniendo mascara `/16`
 - crea una segunda VPC, un segundo App Stack site, un segundo mK8s y una segunda VM Windows kiosk
-- aplica `module-1` sobre esa sucursal y valida workloads, plugin de recommendations y smoke tests del kiosk
+- aplica `module-1` sobre esa sucursal y valida workloads, plugin de recommendations y smoke tests del kiosk usando el mismo camino funcional que consume WordPress
 
 Este workflow no introduce variables ni secretos nuevos. Reutiliza las mismas variables y secretos del workflow principal, por lo que los requisitos de configuracion siguen siendo los mismos mientras `XC_NAMESPACE` termine en `-a` y `VPC_CIDR_MK8S` sea una red IPv4 `/16`.
 
@@ -102,6 +138,13 @@ La logica de agregacion sigue el modo de diseno basado en selector por label com
 - `site_group in (buytime-branches)`
 
 Con esto, el `vK8s` no queda amarrado a una lista estatica de sucursales. En cambio, incorpora automaticamente los App Stack sites que tengan esa label dentro de XC.
+
+La version actual del workflow endurece dos puntos que antes eran ambiguos:
+
+- despues del `terraform apply`, confirma explicitamente que namespace, virtual site y virtual k8s realmente existan en XC antes de continuar
+- la comprobacion de readiness del API del `vK8s` ya no bloquea el workflow si los objetos existen pero todavia no hay sucursales adjuntas; en ese caso deja un `warning` operativo en lugar de fallar toda la ejecucion
+
+Tambien evita reutilizar un `virtual_site` existente a ciegas. Si el selector actual del objeto en XC no coincide exactamente con `BRANCH_VK8S_SELECTOR_EXPRESSION`, el workflow falla de forma explicita en vez de ignorar la deriva de configuracion.
 
 Ademas del workflow de creacion, el repositorio incluye el workflow [.github/workflows/destroy-aws-branch-vk8s.yml](.github/workflows/destroy-aws-branch-vk8s.yml) para destruir ese branch-fleet `vK8s`. En su forma actual, ese workflow no pide inputs manuales: ejecuta un `terraform destroy` completo contra el mismo workspace remoto usado por el deploy y elimina exactamente los recursos que ese workspace tenga bajo control.
 
@@ -161,14 +204,16 @@ Cuando se selecciona `module-1`, el deploy se divide en tres jobs secuenciales:
    Crea o reutiliza la base necesaria para el entorno: namespace XC, VPC, subnet, App Stack site, mK8s y VM kiosk.
 
 2. `module_1`
-    Espera a que el sitio y el API de mK8s esten listos, genera un kubeconfig temporal, aplica el contenido de `module_1` y valida que el resultado final quede operativo.
+   Espera a que el sitio y el API de mK8s esten listos, genera un kubeconfig temporal, aplica el contenido de `module_1` y valida que el resultado final quede operativo.
 
 3. `ce_prerequisites`
-    Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, deja fuera los virtual sites y el vK8s que pertenecen al Module 2, y espera a que el site CE alcance un estado operativo en XC.
+   Aplica el stack de AWS CE site en un job separado, usando un CIDR dedicado y un nombre explicito para el sitio CE, deja fuera los virtual sites y el vK8s que pertenecen al Module 2, y espera a que el site CE alcance un estado operativo en XC.
 
 Cuando se selecciona `module-2`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, amplia el stack de CE en `aws-mk8s-vk8s/aws-ce-site` solo para los foundations de Module 2, reutiliza la cloud credential ya existente del CE en lugar de recrearla, evita reprovisionar la VPC y el site CE y consulta XC para decidir si el namespace `buytime-online`, los virtual sites requeridos y el vK8s deben crearse o reutilizarse. Para el kubeconfig del vK8s usa un API credential con nombre corto y unico por ejecucion para evitar colisiones y respetar el limite de longitud de XC. Antes de aplicar `aws-mk8s-vk8s/module-2`, tambien consulta XC para decidir si el origin pool y el TCP load balancer del modulo de sincronizacion deben crearse o reutilizarse. Despues espera a que el API del vK8s quede operativo y aplica `aws-mk8s-vk8s/module-2` para desplegar el modulo de sincronizacion y su TCP load balancer. Ademas, genera un kubeconfig temporal del branch, ejecuta una validacion TCP real desde el entorno del sitio hacia `inventory-server.branches.buytime.internal:3000` y valida el plugin de sincronizacion de WordPress usando la misma opcion y la misma comprobacion `ping`/`pong` que utiliza la interfaz de administracion.
 
 Cuando se selecciona `module-3`, el workflow reutiliza el workspace remoto de `prerequisites` para recuperar el `app_stack_name`, valida que los foundations de Module 2 ya existan en XC, genera un kubeconfig temporal del vK8s reutilizando el stack `aws-mk8s-vk8s/aws-ce-site` sin reprovisionar namespace, virtual sites ni vK8s, y luego aplica `aws-mk8s-vk8s/module-3` para desplegar el servicio de deals sobre el vK8s y crear su HTTP load balancer publico. Antes del apply consulta XC para decidir si el origin pool y el HTTP load balancer de Module 3 deben crearse o reutilizarse. Finalmente valida el rollout del servicio, comprueba desde el branch que `http://deals.<user_domain>/health` responda con un payload valido y actualiza el plugin de Lightning Deals de WordPress usando la misma opcion `deals_server[deals_server_url]` y la misma comprobacion `wp_remote_get('/health')` que usa la interfaz de administracion.
+
+En conjunto, los workflows de deploy y destroy ya no se limitan a crear o borrar recursos por estado de Terraform. La version actual incorpora validaciones funcionales por el camino real de aplicacion, evita reutilizar objetos XC con deriva silenciosa y protege explicitamente el namespace `democasos` durante los destroys del stack principal y de la segunda sucursal.
 
 ## Variables y secretos relevantes
 
