@@ -656,6 +656,109 @@ jobs:
             -var="xc_api_url=${{ secrets.XC_API_URL }}" \
             -var="xc_api_p12_file=$RUNNER_TEMP/xc-api-creds.p12"
 
+      - name: Force cleanup residual XC CE objects
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          delete_xc_object() {
+            local endpoint="$1"
+            local resource_label="$2"
+            local response_file="$3"
+            local http_code
+            local delete_code
+
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            if [[ "$http_code" == "404" ]]; then
+              echo "${resource_label} is already absent in XC."
+              return 0
+            fi
+
+            if [[ "$http_code" != "200" ]]; then
+              echo "::error::Unable to inspect ${resource_label} in XC (HTTP ${http_code:-curl-error})."
+              [[ -s "$response_file" ]] && cat "$response_file"
+              return 1
+            fi
+
+            delete_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$response_file" \
+              --write-out '%{http_code}' \
+              --request DELETE \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            if [[ "$delete_code" != "200" && "$delete_code" != "202" && "$delete_code" != "204" && "$delete_code" != "404" ]]; then
+              echo "::error::Unable to delete ${resource_label} from XC (HTTP ${delete_code:-curl-error})."
+              [[ -s "$response_file" ]] && cat "$response_file"
+              return 1
+            fi
+
+            for attempt in $(seq 1 20); do
+              http_code="$(curl \
+                --silent \
+                --show-error \
+                --output "$response_file" \
+                --write-out '%{http_code}' \
+                --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+                --key "$RUNNER_TEMP/xc-api-key.pem" \
+                "$endpoint" || true)"
+
+              if [[ "$http_code" == "404" ]]; then
+                echo "${resource_label} has been removed from XC."
+                return 0
+              fi
+
+              if [[ "$attempt" -eq 20 ]]; then
+                echo "::error::${resource_label} still exists in XC after delete attempt."
+                [[ -s "$response_file" ]] && cat "$response_file"
+                return 1
+              fi
+
+              echo "${resource_label} still exists in XC after delete attempt (HTTP ${http_code}); retrying in 15s (${attempt}/20)."
+              sleep 15
+            done
+          }
+
+          delete_xc_object \
+            "${api_root}/api/config/namespaces/${MODULE2_ENVIRONMENT}/virtual_k8ss/buytime-online-vk8s" \
+            "XC CE virtual k8s buytime-online-vk8s" \
+            "$RUNNER_TEMP/ce-virtual-k8s.json"
+
+          delete_xc_object \
+            "${api_root}/api/config/namespaces/${MODULE2_ENVIRONMENT}/virtual_sites/buytime-ce-sites" \
+            "XC CE virtual site buytime-ce-sites" \
+            "$RUNNER_TEMP/ce-customer-edge-virtual-site.json"
+
+          delete_xc_object \
+            "${api_root}/api/config/namespaces/${MODULE2_ENVIRONMENT}/virtual_sites/buytime-re-sites" \
+            "XC CE virtual site buytime-re-sites" \
+            "$RUNNER_TEMP/ce-regional-edge-virtual-site.json"
+
+          delete_xc_object \
+            "${api_root}/api/config/namespaces/system/aws_vpc_sites/${CE_SITE_NAME}" \
+            "XC CE site ${CE_SITE_NAME}" \
+            "$RUNNER_TEMP/ce-aws-vpc-site.json"
+
+          delete_xc_object \
+            "${api_root}/api/config/namespaces/system/cloud_credentialss/${CE_SITE_NAME}" \
+            "XC CE cloud credential ${CE_SITE_NAME}" \
+            "$RUNNER_TEMP/ce-cloud-credential.json"
+
       - name: Write CE destroy summary
         if: always()
         shell: bash
@@ -669,6 +772,7 @@ jobs:
             echo "- CE workspace: ${CE_WORKSPACE}"
             echo "- CE site name: ${CE_SITE_NAME}"
             echo "- Online namespace: ${MODULE2_ENVIRONMENT}"
+            echo "- Residual XC CE cleanup attempted: yes"
           } >> "$GITHUB_STEP_SUMMARY"
 
   destroy_module_1:

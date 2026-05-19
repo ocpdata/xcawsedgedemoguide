@@ -96,6 +96,8 @@ En la version actual, este destroy conserva explicitamente el namespace `democas
 
 Ademas, el destroy reutiliza la misma normalizacion efectiva de `RECOMMENDATIONS_ORIGIN_DNS` y `RECOMMENDATIONS_ORIGIN_PORT` que usa el deploy, de forma que `module-1` se destruya con el mismo origen que quedo registrado en Terraform y en la configuracion operativa de WordPress.
 
+Para el tramo del CE, el workflow tambien agrega una limpieza post-destroy directamente sobre la API de XC. Despues del `terraform destroy` del workspace `aws-ce-site`, intenta borrar de forma explicita el `virtual_k8s` `buytime-online-vk8s`, los `virtual_site` `buytime-ce-sites` y `buytime-re-sites`, el `aws_vpc_site` del CE y la `cloud credential` asociada. Con esto, el full-stack reduce la dependencia de un state perfecto del workspace del CE y elimina residuos operativos que podian quedar visibles en XC despues del destroy.
+
 ## Workflow adicional para segunda sucursal
 
 Ademas del workflow principal, el repositorio incluye el workflow [.github/workflows/deploy-aws-second-branch.yml](.github/workflows/deploy-aws-second-branch.yml) para desplegar una segunda sucursal Retail Branch sin modificar el workflow staged principal.
