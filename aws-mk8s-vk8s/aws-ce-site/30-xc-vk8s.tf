@@ -43,6 +43,11 @@ resource "volterra_virtual_k8s" "buytime" {
   vsite_refs {
     name = local.buytime_re_virtual_site_name
   }
+
+  depends_on = [
+    volterra_virtual_site.buytime_ce,
+    volterra_virtual_site.buytime_re,
+  ]
 }
 
 resource "volterra_api_credential" "buytime" {
@@ -53,6 +58,10 @@ resource "volterra_api_credential" "buytime" {
   api_credential_type   = "KUBE_CONFIG"
   virtual_k8s_namespace = local.module2_namespace_ref
   virtual_k8s_name      = var.virtual_k8s_name
+
+  depends_on = [
+    volterra_virtual_k8s.buytime,
+  ]
 }
 
 resource "local_file" "kubeconfig" {

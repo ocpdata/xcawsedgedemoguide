@@ -208,8 +208,23 @@ jobs:
 
           case "$http_code" in
             200)
+              existing_selector="$(jq -r '[.spec.site_selector.expressions[]?, .spec.site_selector.expression?, .site_selector.expressions[]?, .site_selector.expression?, .replace_form.spec.site_selector.expressions[]?, .replace_form.spec.site_selector.expression?] | map(select(. != null and . != "")) | unique | join(",")' "$RUNNER_TEMP/branch-fleet-virtual-site.json")"
+              desired_selector="${BRANCH_FLEET_SELECTOR_EXPRESSION}"
+
+              if [[ -z "$existing_selector" || "$existing_selector" == "null" ]]; then
+                echo "::error::Virtual site ${BRANCH_FLEET_VIRTUAL_SITE_NAME} already exists in XC, but its selector could not be determined. Refusing to reuse it blindly."
+                cat "$RUNNER_TEMP/branch-fleet-virtual-site.json"
+                exit 1
+              fi
+
+              if [[ "$existing_selector" != "$desired_selector" ]]; then
+                echo "::error::Virtual site ${BRANCH_FLEET_VIRTUAL_SITE_NAME} already exists in XC with a different selector. Existing='${existing_selector}' Desired='${desired_selector}'. Update or recreate the virtual site before rerunning this workflow."
+                cat "$RUNNER_TEMP/branch-fleet-virtual-site.json"
+                exit 1
+              fi
+
               echo "TF_VAR_create_virtual_site=false" >> "$GITHUB_ENV"
-              echo "Virtual site ${BRANCH_FLEET_VIRTUAL_SITE_NAME} already exists in XC; branch fleet workflow will reuse it."
+              echo "Virtual site ${BRANCH_FLEET_VIRTUAL_SITE_NAME} already exists in XC with the expected selector; branch fleet workflow will reuse it."
               ;;
             404)
               echo "TF_VAR_create_virtual_site=true" >> "$GITHUB_ENV"
@@ -261,11 +276,48 @@ jobs:
           set -euo pipefail
           terraform -chdir=aws-mk8s-vk8s/branch-vk8s apply -auto-approve
 
-      - name: Wait for branch fleet vK8s API readiness
+      - name: Confirm branch fleet resources exist in XC
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url='${{ secrets.XC_API_URL }}'
+          api_root="${api_url%/}"
+          api_root="${api_root%/api}"
+
+          declare -a checks=(
+            "namespace|${api_root}/api/web/namespaces/${BRANCH_FLEET_NAMESPACE}|branch-fleet-namespace-post-apply.json"
+            "virtual-site|${api_root}/api/config/namespaces/${BRANCH_FLEET_NAMESPACE}/virtual_sites/${BRANCH_FLEET_VIRTUAL_SITE_NAME}|branch-fleet-virtual-site-post-apply.json"
+            "virtual-k8s|${api_root}/api/config/namespaces/${BRANCH_FLEET_NAMESPACE}/virtual_k8ss/${BRANCH_FLEET_VK8S_NAME}|branch-fleet-vk8s-post-apply.json"
+          )
+
+          for check in "${checks[@]}"; do
+            IFS='|' read -r resource_label endpoint output_file <<< "$check"
+            http_code="$(curl \
+              --silent \
+              --show-error \
+              --output "$RUNNER_TEMP/${output_file}" \
+              --write-out '%{http_code}' \
+              --cert "$RUNNER_TEMP/xc-api-cert.pem" \
+              --key "$RUNNER_TEMP/xc-api-key.pem" \
+              "$endpoint" || true)"
+
+            if [[ "$http_code" != "200" ]]; then
+              echo "::error::Branch fleet ${resource_label} was not readable in XC after apply (HTTP ${http_code:-curl-error})."
+              [[ -s "$RUNNER_TEMP/${output_file}" ]] && cat "$RUNNER_TEMP/${output_file}"
+              exit 1
+            fi
+          done
+
+      - name: Probe branch fleet vK8s API readiness
         shell: bash
         run: |
           set -euo pipefail
           kubeconfig_path="$RUNNER_TEMP/branch-fleet-vk8s-kubeconfig.yaml"
+          if [[ ! -s "$kubeconfig_path" ]]; then
+            echo "::error::The branch fleet vK8s kubeconfig was not generated."
+            exit 1
+          fi
+
           attempts=40
           sleep_seconds=15
           version_log="$RUNNER_TEMP/branch-fleet-vk8s-version.log"
@@ -285,10 +337,10 @@ jobs:
             sleep "$sleep_seconds"
           done
 
-          echo "::error::Timed out waiting for the branch fleet vK8s API to become ready."
+          echo "::warning::Timed out waiting for the branch fleet vK8s API to become ready. The XC objects exist, but no matching branch sites may be attached yet."
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s version || true
           kubectl --kubeconfig "$kubeconfig_path" --request-timeout=10s get namespace "${BRANCH_FLEET_NAMESPACE}" -o name || true
-          exit 1
+          exit 0
 
       - name: Write branch fleet deployment summary
         if: always()
@@ -309,5 +361,5 @@ jobs:
             echo
             echo "- This workflow does not modify existing branch provisioning workflows."
             echo "- The virtual site will only attach branch sites that match the selector expression above."
-            echo "- If branch sites are not labeled yet, the vK8s can exist before any branch joins it."
+            echo "- If branch sites are not labeled yet, the vK8s can exist before any branch joins it, and the API readiness probe may remain pending until sites attach."
           } >> "$GITHUB_STEP_SUMMARY"

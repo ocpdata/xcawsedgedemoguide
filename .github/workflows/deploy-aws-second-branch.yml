@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-aws-second-branch-${{ vars.PROJECT_PREFIX }}-${{ vars.XC_NAMESPACE }}
+  cancel-in-progress: false
+
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
@@ -221,12 +225,21 @@ jobs:
             "$site_endpoint" || true)"
 
           if [[ "$http_code" != "200" ]]; then
-            echo "Unable to read primary App Stack site status (HTTP ${http_code:-curl-error}). Proceeding because primary prerequisites state exists."
+            echo "::error::Unable to read primary App Stack site status (HTTP ${http_code:-curl-error}). The primary branch must be healthy before creating the second branch."
             [[ -s "$response_file" ]] && cat "$response_file"
-            exit 0
+            exit 1
           fi
 
           site_state="$(jq -r '[.spec?.site_state, .replace_form?.spec?.site_state, .site_state, .status[]?.site_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+          operational_status="$(jq -r '[.status[]?.conditions[]? | select(.type == "Operational") | .status] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+          apply_state="$(jq -r '[.status[]?.deployment?.apply_status?.apply_state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+          running_state="$(jq -r '[.status[]?.ver_status?.running_state_status?.state] | map(select(. != null and . != "")) | first // ""' "$response_file")"
+
+          echo "Primary App Stack site state: ${site_state:-unknown}"
+          echo "Primary App Stack operational status: ${operational_status:-unknown}"
+          echo "Primary App Stack apply state: ${apply_state:-unknown}"
+          echo "Primary App Stack running state: ${running_state:-unknown}"
+
           case "$site_state" in
             FAILED|FAILED_INACTIVE|ERROR_IN_ORCHESTRATION|VALIDATION_FAILED|ERROR_DELETING_CLOUD_RESOURCES|ERROR_UPDATING_CLOUD_RESOURCES)
               echo "::error::Primary App Stack site is in a terminal state. Site state=${site_state}."
@@ -234,6 +247,22 @@ jobs:
               exit 1
               ;;
           esac
+
+          if [[ "$apply_state" == "APPLIED" && ( "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ) ]]; then
+            exit 0
+          fi
+
+          case "$site_state" in
+            ONLINE|ORCHESTRATION_COMPLETE|VALIDATION_SUCCESS)
+              if [[ -z "$operational_status" || "$operational_status" == "True" || "$operational_status" == "Installed" || "$running_state" == "OPERATIONAL_READY" ]]; then
+                exit 0
+              fi
+              ;;
+          esac
+
+          echo "::error::Primary App Stack site is not yet healthy enough to seed the second branch."
+          cat "$response_file"
+          exit 1
 
   second_branch_prerequisites:
     name: Apply second branch prerequisites
@@ -837,26 +866,60 @@ jobs:
             exit 1
           fi
 
-      - name: Verify recommendations origin reachability
+      - name: Verify recommendations reachability through XC
         shell: bash
         run: |
           set -euo pipefail
-          origin_dns="${RECOMMENDATIONS_ORIGIN_DNS:-recommendations.buytime.sr.f5-cloud-demo.com}"
-          origin_port="${RECOMMENDATIONS_ORIGIN_PORT:-443}"
-          http_code="$(curl \
-            --silent \
-            --show-error \
-            --output /dev/null \
-            --write-out '%{http_code}' \
-            --max-time 20 \
-            "https://${origin_dns}:${origin_port}/" || true)"
+          namespace='${{ needs.second_branch_prerequisites.outputs.xc_namespace }}'
+          kubeconfig_path='${{ steps.kubeconfig.outputs.kubeconfig_path }}'
+          recommendations_domain='${{ steps.module_outputs.outputs.recommendations_domain }}'
+          wordpress_pod="$(kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" get pod -l app=wordpress -o jsonpath='{.items[0].metadata.name}')"
+          php_script="$RUNNER_TEMP/verify-recommendations-reachability.php"
 
-          if [[ "$http_code" == "000" || -z "$http_code" ]]; then
-            echo "::error::Unable to reach the recommendations origin ${origin_dns}:${origin_port}."
+          if [[ -z "$wordpress_pod" ]]; then
+            echo "::error::Unable to locate the second branch wordpress pod to verify recommendations reachability through XC."
             exit 1
           fi
 
-          echo "Recommendations origin responded with HTTP ${http_code}."
+          cat > "$php_script" <<PHP
+          <?php
+          \$domain = '${recommendations_domain}';
+          if (\$domain === '') {
+              fwrite(STDERR, "Missing recommendations domain.\n");
+              exit(1);
+          }
+
+          \$context = stream_context_create([
+              'http' => [
+                  'timeout' => 15,
+                  'ignore_errors' => true,
+              ],
+          ]);
+          \$body = @file_get_contents("http://{\$domain}/", false, \$context);
+          \$headers = \$http_response_header ?? [];
+          \$statusLine = is_array(\$headers) && count(\$headers) > 0 ? \$headers[0] : '';
+
+          if (!preg_match('/^HTTP\/\S+\s+(\d{3})\b/', \$statusLine, \$matches)) {
+              fwrite(STDERR, "Recommendations domain did not return an HTTP status line.\n");
+              exit(1);
+          }
+
+          \$statusCode = (int) \$matches[1];
+          if (\$statusCode >= 500) {
+              fwrite(STDERR, "Recommendations domain returned HTTP \$statusCode.\n");
+              exit(1);
+          }
+
+          fwrite(STDOUT, "Recommendations domain reached through XC with HTTP \$statusCode.\n");
+          if (\$body !== false && \$body !== '') {
+              fwrite(STDOUT, substr(\$body, 0, 200) . "\n");
+          }
+          PHP
+
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- php -v >/dev/null
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec -i "$wordpress_pod" -- sh -c 'cat > /tmp/verify-recommendations-reachability.php' < "$php_script"
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- php /tmp/verify-recommendations-reachability.php
+          kubectl --kubeconfig "$kubeconfig_path" -n "$namespace" exec "$wordpress_pod" -- rm -f /tmp/verify-recommendations-reachability.php || true
 
       - name: Write second branch deployment summary
         if: always()
