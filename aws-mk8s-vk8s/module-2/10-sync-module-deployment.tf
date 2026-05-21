@@ -6,4 +6,5 @@ locals {
 resource "kubectl_manifest" "sync_module" {
   count     = length(local.sync_module)
   yaml_body = local.sync_module[count.index]
+  wait_for_rollout = false
 }
